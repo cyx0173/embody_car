@@ -1,0 +1,4 @@
+model/ASR/*
+model/LM/*
+!model/ASR/.gitkeep
+!model/LM/.gitkeep

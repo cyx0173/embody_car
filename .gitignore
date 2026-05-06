@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+*.log
+.DS_Store
+FunASR-main/
+landmark_demo_v2/
+*.mp4
+*.zip
+*.png
+*.jpg
+*.jpeg
+*.pdf
