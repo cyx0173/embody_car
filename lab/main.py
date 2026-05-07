@@ -51,7 +51,8 @@ class EmbodiedAgent:
         return None
 
     def _handle_tracking(self, target, current_image):
-        return "视觉追踪处理"
+        self.visual_tracking.track(target, current_image)
+        return "目标追踪完成"
 
     def _handle_vqa(self, user_text, current_image):
         if current_image is None:
