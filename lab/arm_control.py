@@ -1,3 +1,4 @@
+from turtle import pos
 import serial
 import time
 
@@ -7,7 +8,7 @@ class ServoController:
     REG_POS_READ = 56
 
     ALL_IDS = [1, 2, 3, 4, 5, 6]
-    HOME_POS = {1: 2185, 2: 863, 3: 3107, 4: 861, 5: 2174, 6: -1}
+    HOME_POS = {1: 2185, 2: 863, 3: 3107, 4: 1285, 5: 69, 6: -1}
 
     def __init__(self, port="/dev/cu.usbmodem5AE60562991", baudrate=1_000_000):
         try:
@@ -94,14 +95,8 @@ class ServoController:
         self._ser.close()
 if __name__ == "__main__":
     arm = ServoController()
-    #arm.reset()
-    time.sleep(2)
-    while True:
-        arm.spin(5, -30)
-        pos2 = arm.get_position(5)
-        if pos2 is not None:
-            print(f"3号电机位置: {pos2}")
-        else:
-            print("1号电机位置读取失败")
-        time.sleep(1)
-
+    arm.reset()
+    pos5 = arm.get_position(5)
+    print(f"5号电机位置: {pos5}")
+    pos4 = arm.get_position(4)
+    print(f"4号电机位置: {pos4}")
