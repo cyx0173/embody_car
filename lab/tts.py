@@ -1,12 +1,24 @@
+import subprocess
+from pathlib import Path
+
 import torch
 import sounddevice as sd
 import numpy as np
 import re
-from qwen_tts import Qwen3TTSModel
 
 
 class TTS:
     def __init__(self, model_path="./Qwen3-TTS-0.6B-CustomVoice"):
+        self.model = None
+        self.fallback_say = False
+        self.sampling_rate = 24000
+        if not Path(model_path).exists():
+            print(f"[TTS] 未找到本地模型 {model_path}，将使用系统say命令。")
+            self.fallback_say = True
+            return
+
+        from qwen_tts import Qwen3TTSModel
+
         self.device = "mps" if torch.backends.mps.is_available() else "cpu"
         sd.default.device = 2
 
@@ -15,7 +27,6 @@ class TTS:
             device_map=self.device,
             dtype=torch.bfloat16,
         )
-        self.sampling_rate = 24000
         print("Jarvis TTS ready")
 
     def _split_text(self, text):
@@ -28,6 +39,11 @@ class TTS:
         return [c for c in chunks if c.strip()]
 
     def speak(self, text, speaker="Vivian"):
+        if self.fallback_say:
+            print(f"助手: {text}")
+            subprocess.run(["say", text], check=False)
+            return
+
         chunks = self._split_text(text)
         for i, chunk in enumerate(chunks):
             wavs, sr = self.model.generate_custom_voice(

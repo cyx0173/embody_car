@@ -1,22 +1,33 @@
 import base64
+import os
 import cv2
 import numpy as np
 from zhipuai import ZhipuAI
-ZHIPUAI_API_KEY = "8347ecf1ad7f45ec92164105c33773bc.wivz1tEE2xTWOUbc"
+ZHIPUAI_API_KEY = os.getenv("ZHIPUAI_API_KEY", "8347ecf1ad7f45ec92164105c33773bc.wivz1tEE2xTWOUbc")
 
 class VLM:
     def __init__(self, api_key: str = ZHIPUAI_API_KEY):
         self.client = ZhipuAI(api_key=api_key)
 
-    def _rgb_to_b64(self, rgb: np.ndarray) -> str:
-        u8 = (np.clip(rgb, 0.0, 1.0) * 255).astype(np.uint8)
-        return base64.b64encode(cv2.imencode(".jpg", u8)[1]).decode()
+    def _image_to_b64(self, image: np.ndarray) -> str:
+        if image is None:
+            raise ValueError("image is None")
+        if image.dtype == np.uint8:
+            u8 = image
+        else:
+            max_value = float(np.nanmax(image)) if image.size else 1.0
+            scale = 255.0 if max_value <= 1.0 else 1.0
+            u8 = np.clip(image * scale, 0, 255).astype(np.uint8)
+        ok, encoded = cv2.imencode(".jpg", u8)
+        if not ok:
+            raise ValueError("failed to encode image as jpg")
+        return base64.b64encode(encoded).decode()
 
     def generate(self, image, text: str) -> str:
         if isinstance(image, str):
             b64_str = base64.b64encode(open(image, "rb").read()).decode()
         else:
-            b64_str = self._rgb_to_b64(image)
+            b64_str = self._image_to_b64(image)
 
         response = self.client.chat.completions.create(
             model="glm-4v",
