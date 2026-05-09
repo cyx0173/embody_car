@@ -132,7 +132,6 @@ class VisualTracking:
 
     def detect_object(self, img: np.ndarray, target_class: str) -> tuple[float, float] | None:
         results = self.model(img, verbose=False)
-
         for r in results:
             for box in r.boxes:
                 conf = float(box.conf[0])

@@ -1,0 +1,37 @@
+{
+  "model": "opencv_pinhole",
+  "camera_matrix": [
+    [
+      950.2829329099275,
+      0.0,
+      317.8858004147501
+    ],
+    [
+      0.0,
+      949.2787707588404,
+      282.10744703055474
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "dist_coeffs": [
+    0.08427366255925593,
+    0.8233255202548362,
+    0.00653988328837949,
+    0.007752786877328441,
+    -1.6759514941150138
+  ],
+  "image_width": 540,
+  "image_height": 540,
+  "rms_reprojection_error": 0.3942669762916707,
+  "board": {
+    "type": "chessboard",
+    "inner_corners_cols": 9,
+    "inner_corners_rows": 6,
+    "square_size_m": 0.01688
+  },
+  "capture_count": 20
+}

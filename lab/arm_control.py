@@ -8,7 +8,7 @@ class ServoController:
     REG_POS_READ = 56
 
     ALL_IDS = [1, 2, 3, 4, 5, 6]
-    HOME_POS = {1: 2185, 2: 863, 3: 3107, 4: 1285, 5: 69, 6: -1}
+    HOME_POS = {1: 2185, 2: 863, 3: 3107, 4: 1584, 5: 77, 6: -1}
 
     def __init__(self, port="/dev/cu.usbmodem5AE60562991", baudrate=1_000_000):
         try:
@@ -95,7 +95,7 @@ class ServoController:
         self._ser.close()
 if __name__ == "__main__":
     arm = ServoController()
-    arm.reset()
+    #arm.reset()
     pos5 = arm.get_position(5)
     print(f"5号电机位置: {pos5}")
     pos4 = arm.get_position(4)
