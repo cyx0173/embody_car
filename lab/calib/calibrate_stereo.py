@@ -6,10 +6,7 @@ Stereo Extrinsic Calibration — 双目相对位置标定
 旋转矩阵 R、平移向量 t（含基线距离）、投影矩阵 P1, P2。
 
 用法:
-    python calibrate_stereo.py --left-intrinsics camera_left.json \\
-                               --right-intrinsics camera_right.json \\
-                               --stereo-pairs ./stereo_captures \\
-                               --cols 9 --rows 6 --square-size 0.0254
+python calibrate_stereo.py --left-intrinsics camera_left.json --right-intrinsics camera_right.json --stereo-pairs ./stereo_captures --cols 9 --rows 6 --square-size 0.0254
 """
 
 import argparse
@@ -191,7 +188,6 @@ def main() -> None:
         t,
         E,
         F,
-        _,
     ) = result
 
     baseline_m = np.linalg.norm(t)

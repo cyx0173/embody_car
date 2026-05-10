@@ -25,9 +25,9 @@ class Joint:
 DEFAULT_ZERO_POSE = {
     "gripper": 0.0,
     "wrist_roll": 0.0,
-    "wrist_flex": 1.22,
-    "elbow_flex": 0.92,
-    "shoulder_lift": -1.2265625,
+    "wrist_flex": 0,
+    "elbow_flex": 0,
+    "shoulder_lift": 0,
     "shoulder_pan": 0.0,
 }
 
@@ -169,7 +169,7 @@ def solve_position_ik(
     tip_offset: np.ndarray,
     solve_joint_names: list[str],
     initial_joint_values: dict[str, float] | None = None,
-    max_iterations: int = 120,
+    max_iterations: int = 1000000000,
     tolerance: float = 1e-4,
     damping: float = 1e-4,
     max_step: float = 0.35,
@@ -185,8 +185,10 @@ def solve_position_ik(
     joint_values = clip_to_limits(joint_values, joint_by_name)
     best_values = dict(joint_values)
     best_error = float("inf")
+    count = 0
 
     for _ in range(max_iterations):
+        count += 1
         current_position, link_frames, joint_frames = get_tip_position(
             root_link, children_map, joint_values, tip_link, tip_offset
         )
@@ -199,7 +201,7 @@ def solve_position_ik(
 
         if error_norm < tolerance:
             return joint_values, error_norm
-
+        #print(error_norm)
         jacobian = geometric_jacobian(
             root_link, children_map, joint_by_name, solve_joint_names, joint_values, tip_link, tip_offset
         )
@@ -214,7 +216,7 @@ def solve_position_ik(
         for name, delta in zip(solve_joint_names, step):
             candidate[name] += float(delta)
         joint_values = clip_to_limits(candidate, joint_by_name)
-
+    print(f"iterations: {count}")
     return best_values, best_error
 
 def parse_xyz(text: str | None) -> np.ndarray:
