@@ -1,6 +1,18 @@
 from turtle import pos
 import serial
 import time
+from Angle_config import SERVO_CALIBRATION, JOINT_ID_MAP
+
+def _resolve_zero_position(joint_config: dict) -> int:
+    lower = int(joint_config["range_min"])
+    upper = int(joint_config["range_max"])
+    offset = int(joint_config["homing_offset"])
+    candidates = (offset, (offset % 4096), 2048 + offset, 2048 - offset)
+    for c in candidates:
+        if lower <= int(c) <= upper:
+            return int(c)
+    return int((lower + upper) / 2)
+
 
 class ServoController:
     REG_MODE = 33
@@ -8,7 +20,7 @@ class ServoController:
     REG_POS_READ = 56
 
     ALL_IDS = [1, 2, 3, 4, 5, 6]
-    HOME_POS = {1: 2185, 2: 863, 3: 3107, 4: 1285, 5: 69, 6: -1}
+    HOME_POS = {1: 2185, 2: 863, 3: 3107, 4: 1245, 5: 312, 6: -1}
 
     def __init__(self, port="/dev/cu.usbmodem5AE60562991", baudrate=1_000_000):
         try:
@@ -18,6 +30,32 @@ class ServoController:
         except Exception as e:
             print(f"❌ 无法打开串口: {e}")
             raise
+        self.middle = {
+            name: _resolve_zero_position(cfg) for name, cfg in SERVO_CALIBRATION.items()
+        }
+        self.joints_range = {
+            name: [cfg["range_min"], cfg["range_max"]] for name, cfg in SERVO_CALIBRATION.items()
+        }
+
+    def rad_to_raw(self, joint_name: str, angle_rad: float) -> int:
+        angle_deg = angle_rad * 180.0 / 3.141592653589793
+        raw = int(angle_deg * 4096.0 / 360.0 + self.middle[joint_name])
+        lo, hi = self.joints_range[joint_name]
+        return max(lo, min(hi, raw))
+
+    def joints_move_radian(self, joints_name_position: list, speed: int = 1000, acc: int = 50):
+        for name, angle_rad in joints_name_position:
+            servo_id = JOINT_ID_MAP[name]
+            raw = self.rad_to_raw(name, angle_rad)
+            self.move_to(servo_id, raw, speed=speed, acc=acc)
+
+    def joints_move_angle(self, joints_name_position: list, speed: int = 1000, acc: int = 50):
+        for name, angle_deg in joints_name_position:
+            servo_id = JOINT_ID_MAP[name]
+            raw = int(angle_deg * 4096.0 / 360.0 + self.middle[name])
+            lo, hi = self.joints_range[name]
+            raw = max(lo, min(hi, raw))
+            self.move_to(servo_id, raw, speed=speed, acc=acc)
 
     def _checksum(self, payload):
         return (~sum(payload)) & 0xFF
@@ -95,8 +133,8 @@ class ServoController:
         self._ser.close()
 if __name__ == "__main__":
     arm = ServoController()
-    arm.reset()
-    pos5 = arm.get_position(5)
+    #arm.reset()
+    pos5 = arm.get_position(2)
     print(f"5号电机位置: {pos5}")
     pos4 = arm.get_position(4)
     print(f"4号电机位置: {pos4}")

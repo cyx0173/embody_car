@@ -535,6 +535,7 @@ class VisualTracking:
 
     def detect_object(self, img: np.ndarray, target_class: str, stage: str = "arm") -> tuple[float, float] | None:
         results = self.model(img, verbose=False)
+<<<<<<< HEAD
         best_match = None
         img_h, img_w = img.shape[:2]
         center_x = img_w / 2
@@ -542,6 +543,10 @@ class VisualTracking:
 
         for result in results:
             for box in result.boxes:
+=======
+        for r in results:
+            for box in r.boxes:
+>>>>>>> origin/cyx
                 conf = float(box.conf[0])
                 if conf < self.min_conf:
                     continue
