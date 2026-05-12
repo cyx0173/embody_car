@@ -9,7 +9,7 @@ BASE_HEIGHT_M = 0.095
 UPPER_ARM_M = 0.11257
 FOREARM_M = 0.13490
 # 腕关节到末端参考点的长度。没实测前保持 0，函数会退化成肩肘两连杆求解。
-TOOL_OFFSET_M = 0.0
+TOOL_OFFSET_M = 0.1
 ANGLE_SEARCH_STEP_RAD = math.radians(1.0)
 
 TICKS_PER_REV = 4096
