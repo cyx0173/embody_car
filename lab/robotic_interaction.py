@@ -8,6 +8,7 @@ import cv2
 import time
 import os
 import sys
+from solve_ik import solve_ik
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -30,15 +31,19 @@ class RoboticInteraction:
 
     def test_interact(self,target_world_xyz)->None:
         self.target_world_xyz = target_world_xyz
-        self.last_ik_solution, self.last_ik_error = self.robot.solve_ik(self.target_world_xyz)
+        self.last_ik_solution = solve_ik(self.target_world_xyz)
         print(self.last_ik_solution)
         joints_list = [[name, angle] for name, angle in self.last_ik_solution.items()]
-        self.arm.joints_move_radian(joints_list)
+        for name, tick in joints_list:
+            print(name,tick)
+            if 1 <= name <= 4:
+                self.arm.move_to(name, tick)
+
 
     def interact(self, target: str):
         self.target_world_xyz = self.double_cap_locate(target)
         print(self.target_world_xyz)
-        self.last_ik_solution, self.last_ik_error = self.robot.solve_ik(self.target_world_xyz)
+        self.last_ik_solution = solve_ik(self.target_world_xyz)
         print(self.last_ik_solution)
         joints_list = [[name, angle] for name, angle in self.last_ik_solution.items()]
         self.arm.joints_move_radian(joints_list)
@@ -125,9 +130,9 @@ class RoboticInteraction:
 if __name__ == "__main__":
     robot = RoboticInteraction()
     depth = 0.60      # 60cm
-    horizontal = 0.05 # 5cm
+    horizontal = 0 # 5cm
     height = 0.30     # 30cm
     robot.arm.reset()
     time.sleep(2)
-    point = np.array([5, -8, -1])
+    point = np.array([0.25, 0, 0])
     robot.test_interact(point)
