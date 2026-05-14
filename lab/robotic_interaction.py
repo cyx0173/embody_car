@@ -12,6 +12,26 @@ from solve_ik import solve_ik
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+SAFE_READY_TICKS = {
+    1: 2222,  # manually tuned safe ready pose
+    2: 845,
+    3: 3115,
+    4: 898,
+    5: 74,
+}
+SAFE_FOLD_ORDER = (3, 4)
+SAFE_REST_ORDER = (2, 1, 5)
+TARGET_MOVE_ORDER = (1, 2, 3, 4, 5)
+SAFE_MOVE_SPEED = 800
+SAFE_MOVE_ACC = 40
+SAFE_MOVE_SERVO_OVERRIDES = {
+    4: {"speed": 400, "acc": 20},
+}
+SAFE_POSITION_TOLERANCE_TICKS = 80
+SAFE_FOLD_TIMEOUT_S = 8.0
+SAFE_READY_SETTLE_S = 4.0
+
+
 class RoboticInteraction:
     """机器人交互模块"""
 
@@ -29,24 +49,98 @@ class RoboticInteraction:
         self.state = "LOCATE"
         self.scan_speed = 50
 
-    def test_interact(self,target_world_xyz)->None:
+    def _move_ticks(
+        self,
+        ticks: dict[int, int],
+        order: tuple[int, ...],
+        speed: int = 500,
+        acc: int = 20,
+        delay_s: float = 0.25,
+        servo_overrides: dict[int, dict[str, int]] | None = None,
+    ) -> None:
+        for servo_id in order:
+            tick = ticks.get(servo_id)
+            if tick is None or tick < 0:
+                continue
+            override = (servo_overrides or {}).get(servo_id, {})
+            move_speed = override.get("speed", speed)
+            move_acc = override.get("acc", acc)
+            print(f"移动舵机 {servo_id} -> {tick}, speed={move_speed}, acc={move_acc}")
+            self.arm.move_to(servo_id, tick, speed=move_speed, acc=move_acc)
+            time.sleep(delay_s)
+
+    def _wait_until_ticks(
+        self,
+        ticks: dict[int, int],
+        order: tuple[int, ...],
+        timeout_s: float,
+        tolerance_ticks: int = SAFE_POSITION_TOLERANCE_TICKS,
+    ) -> None:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            positions = {servo_id: self.arm.get_position(servo_id) for servo_id in order}
+            is_ready = all(
+                positions[servo_id] >= 0
+                and abs(positions[servo_id] - ticks[servo_id]) <= tolerance_ticks
+                for servo_id in order
+            )
+            print(f"等待舵机 {order} 到位: {positions}")
+            if is_ready:
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"舵机 {order} 未能在 {timeout_s:.1f}s 内到位: {positions}")
+            time.sleep(0.5)
+
+    def _move_to_safe_ready(self) -> None:
+        print("先让 3/4 号回到折叠安全姿态")
+        self._move_ticks(
+            SAFE_READY_TICKS,
+            SAFE_FOLD_ORDER,
+            speed=SAFE_MOVE_SPEED,
+            acc=SAFE_MOVE_ACC,
+            delay_s=0.6,
+            servo_overrides=SAFE_MOVE_SERVO_OVERRIDES,
+        )
+        self._wait_until_ticks(
+            SAFE_READY_TICKS,
+            SAFE_FOLD_ORDER,
+            timeout_s=SAFE_FOLD_TIMEOUT_S,
+        )
+        print("3/4 号已到位，再移动 2/1/5 回初始")
+        self._move_ticks(
+            SAFE_READY_TICKS,
+            SAFE_REST_ORDER,
+            speed=SAFE_MOVE_SPEED,
+            acc=SAFE_MOVE_ACC,
+            delay_s=0.6,
+            servo_overrides=SAFE_MOVE_SERVO_OVERRIDES,
+        )
+        print(f"等待安全姿态稳定 {SAFE_READY_SETTLE_S:.1f}s")
+        time.sleep(SAFE_READY_SETTLE_S)
+
+    def move_to_world_xyz(self, target_world_xyz: np.ndarray, return_to_ready: bool = True) -> None:
         self.target_world_xyz = target_world_xyz
         self.last_ik_solution = solve_ik(self.target_world_xyz)
-        print(self.last_ik_solution)
-        joints_list = [[name, angle] for name, angle in self.last_ik_solution.items()]
-        for name, tick in joints_list:
-            print(name,tick)
-            if 1 <= name <= 4:
-                self.arm.move_to(name, tick)
+        print("目标坐标:", self.target_world_xyz)
+        print("目标 tick:", self.last_ik_solution)
+        if return_to_ready:
+            self._move_to_safe_ready()
+        self._move_ticks(
+            self.last_ik_solution,
+            TARGET_MOVE_ORDER,
+            speed=500,
+            acc=20,
+            delay_s=0.25,
+        )
+
+    def test_interact(self,target_world_xyz)->None:
+        self.move_to_world_xyz(target_world_xyz, return_to_ready=True)
 
 
     def interact(self, target: str):
         self.target_world_xyz = self.double_cap_locate(target)
         print(self.target_world_xyz)
-        self.last_ik_solution = solve_ik(self.target_world_xyz)
-        print(self.last_ik_solution)
-        joints_list = [[name, angle] for name, angle in self.last_ik_solution.items()]
-        self.arm.joints_move_radian(joints_list)
+        self.move_to_world_xyz(self.target_world_xyz, return_to_ready=True)
 
     def detect_object(self, img: np.ndarray, target_class: str) -> tuple[float, float] | None:
         results = self.model(img, verbose=False)
@@ -129,10 +223,5 @@ class RoboticInteraction:
         return point_3d
 if __name__ == "__main__":
     robot = RoboticInteraction()
-    depth = 0.60      # 60cm
-    horizontal = 0 # 5cm
-    height = 0.30     # 30cm
-    robot.arm.reset()
-    time.sleep(2)
-    point = np.array([0.25, 0, 0])
+    point = np.array([0.30, 0.00, 0.24])
     robot.test_interact(point)
