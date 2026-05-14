@@ -43,11 +43,12 @@ class ServoController:
         lo, hi = self.joints_range[joint_name]
         return max(lo, min(hi, raw))
 
-    def joints_move_radian(self, joints_name_position: list, speed: int = 1000, acc: int = 50):
+    def joints_move_radian(self, joints_name_position: list, speed: int = 2000, acc: int = 50):
         for name, angle_rad in joints_name_position:
             servo_id = JOINT_ID_MAP[name]
             raw = self.rad_to_raw(name, angle_rad)
             self.move_to(servo_id, raw, speed=speed, acc=acc)
+            time.sleep(0.05)
 
     def joints_move_angle(self, joints_name_position: list, speed: int = 1000, acc: int = 50):
         for name, angle_deg in joints_name_position:
@@ -104,7 +105,7 @@ class ServoController:
         self._send_write(servo_id, self.REG_WRITE_V, [acc, 0, 0, 0, 0, spd_lo, spd_hi])
         self._states[servo_id]['speed'] = speed
 
-    def move_to(self, servo_id, pos, speed=1000, acc=50):
+    def move_to(self, servo_id, pos, speed=4000, acc=50):
         self.set_mode(servo_id, 0)
         pos = max(0, min(4095, int(pos)))
         p_lo, p_hi = pos & 0xFF, (pos >> 8) & 0xFF
@@ -134,7 +135,42 @@ class ServoController:
 if __name__ == "__main__":
     arm = ServoController()
     #arm.reset()
-    pos5 = arm.get_position(2)
-    print(f"5号电机位置: {pos5}")
-    pos4 = arm.get_position(4)
-    print(f"4号电机位置: {pos4}")
+    for i in range(1, 5):
+        pos = arm.get_position(i)
+        print(f"舵机 ID {i} 的当前原始脉冲 (Raw Ticks): {pos}")
+    #arm.spin(4,-300)
+    #time.sleep(2)
+    #arm.brake(4)
+
+
+'''
+    arm.move_to(1,3022)
+    time.sleep(0.5)
+    arm.move_to(2,3069)
+    time.sleep(0.5)
+    arm.move_to(3,1024)
+    time.sleep(0.5)
+    arm.move_to(4,2031)
+    time.sleep(0.5)
+'''
+'''
+(embody) chengyx@chengyxdeMacBook-Air lab % python arm_control.py
+✅ 串口已连接: /dev/cu.usbmodem5AE60562991
+舵机 ID 1 的当前原始脉冲 (Raw Ticks): 2005
+舵机 ID 2 的当前原始脉冲 (Raw Ticks): 3114
+舵机 ID 3 的当前原始脉冲 (Raw Ticks): 1061
+舵机 ID 4 的当前原始脉冲 (Raw Ticks): 2049
+(embody) chengyx@chengyxdeMacBook-Air lab % 
+这是初始的0度下的
+
+舵机 ID 1 的当前原始脉冲 (Raw Ticks): 963  +90度 
+舵机 ID 2 的当前原始脉冲 (Raw Ticks): 2072 +90度
+舵机 ID 2 的当前原始脉冲 (Raw Ticks): 1051 +180度 
+
+舵机 ID 3 的当前原始脉冲 (Raw Ticks): 2061 +90度
+舵机 ID 3 的当前原始脉冲 (Raw Ticks): 3114 +180度
+
+舵机 ID 4 的当前原始脉冲 (Raw Ticks): 3073 +90度 
+舵机 ID 4 的当前原始脉冲 (Raw Ticks): 1088 -90度
+
+'''
