@@ -68,7 +68,12 @@ class RoboticInteraction:
             print(f"移动舵机 {servo_id} -> {tick}, speed={move_speed}, acc={move_acc}")
             self.arm.move_to(servo_id, tick, speed=move_speed, acc=move_acc)
             time.sleep(delay_s)
-
+    
+    def _capture_hand(self) -> np.ndarray:
+        ret, frame = self.cap.read()
+        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        return frame
+    
     def _wait_until_ticks(
         self,
         ticks: dict[int, int],
@@ -138,7 +143,8 @@ class RoboticInteraction:
 
 
     def interact(self, target: str):
-        self.target_world_xyz = self.double_cap_locate(target)
+        extrinsics = "/Users/kismet/embody_car/lab/calib/stereo_extrinsics_ver0.json"
+        self.target_world_xyz = self.double_cap_locate(target, extrinsics)
         print(self.target_world_xyz)
         self.move_to_world_xyz(self.target_world_xyz, return_to_ready=True)
 
@@ -162,18 +168,32 @@ class RoboticInteraction:
                     return (float(cx), float(cy))
         return None
 
-    def detect_target(self,target: str) -> tuple[np.ndarray, np.ndarray]:
-        ret, frame_1 = self.cap.read()
-        ret, frame_0 = self.base_cap.read()
+    def detect_target(self, target: str) -> tuple[tuple[float, float], tuple[float, float]]:
+        frame_1 = self._capture_hand()
+        ret0, frame_0 = self.base_cap.read()
+
+        if not ret0 or frame_0 is None:
+            raise RuntimeError("底座相机读取失败")
+
         pts_1 = self.detect_object(frame_1, target)
         pts_2 = self.detect_object(frame_0, target)
+
+        print("手部相机检测点 pts_1:", pts_1)
+        print("底座相机检测点 pts_2:", pts_2)
+
+        if pts_1 is None:
+            raise RuntimeError(f"手部相机没有检测到目标: {target}")
+
+        if pts_2 is None:
+            raise RuntimeError(f"底座相机没有检测到目标: {target}")
+
         return pts_1, pts_2
 
     def locate_point(self,target: str) -> None:
         self.arm.reset()
         self.state = "LOCATE"
         while self.state == "LOCATE":
-            base_img = self._capture_base()
+            base_img = self.base_cap.read()[1]
             base_uv = self.detect_object(base_img, target)
             if base_uv is None:
                 is_safe, danger = self.arm_manager.safe_detect(1, self.arm)
@@ -192,36 +212,40 @@ class RoboticInteraction:
                 break
             time.sleep(0.1)
 
-    def camera_point_to_base(
-        point_camera: np.ndarray,
-        mounted_link: str,
-        link_T_camera: np.ndarray,
-        link_frames: dict[str, np.ndarray],
-    ) -> np.ndarray:
-        base_T_camera = link_frames[mounted_link] @ link_T_camera
-        homogeneous = np.ones(4, dtype=float)
-        homogeneous[:3] = point_camera
-        return (base_T_camera @ homogeneous)[:3]
+    # def camera_point_to_base(
+    #     point_camera: np.ndarray,
+    #     mounted_link: str,
+    #     link_T_camera: np.ndarray,
+    #     link_frames: dict[str, np.ndarray],
+    # ) -> np.ndarray:
+    #     base_T_camera = link_frames[mounted_link] @ link_T_camera
+    #     homogeneous = np.ones(4, dtype=float)
+    #     homogeneous[:3] = point_camera
+    #     return (base_T_camera @ homogeneous)[:3]
 
     def convert_4d_to_3d(self,points_4d: np.ndarray) -> np.ndarray:
-        camera1_point_3d = points_4d[:3] / points_4d[3]
-        gripper_point_3d = self.camera_point_to_base(camera1_point_3d, "gripper_link", self.link_T_camera, self.link_frames)
-        return gripper_point_3d
+        camera1_point_3d = - points_4d[:3] / points_4d[3]
+        # gripper_point_3d = self.camera_point_to_base(camera1_point_3d, "gripper_link", self.link_T_camera, self.link_frames)
+        return camera1_point_3d
 
     #双目定位代码
     def double_cap_locate(self,target: str, extrinsics_path: str) -> np.ndarray:
         self.locate_point(target)
         with open(extrinsics_path, 'r') as f:
             ext = json.load(f)
-        P1 = np.array(ext['P1_rectification'])
-        P2 = np.array(ext['P2_rectification'])
-        #手部相机p2 底座相机p1 
-        pts_1,pts_2 = self.detect_target(target)
-        points_4d = cv2.triangulatePoints(P2, P1, pts_2, pts_1)
+        P1 = np.array(ext['P1_rectification'], dtype=np.float64)
+        P2 = np.array(ext['P2_rectification'], dtype=np.float64)
+        pts_1, pts_2 = self.detect_target(target)
+
+        pts_1 = np.array(pts_1, dtype=np.float64).reshape(2, 1)
+        pts_2 = np.array(pts_2, dtype=np.float64).reshape(2, 1)
+        points_4d = cv2.triangulatePoints(P1, P2, pts_1, pts_2)
         #返回相对手部相机的坐标
         point_3d = self.convert_4d_to_3d(points_4d)
+        print("三维坐标:", point_3d)
         return point_3d
+    
 if __name__ == "__main__":
     robot = RoboticInteraction()
-    point = np.array([0.30, 0.00, 0.24])
-    robot.test_interact(point)
+    #point = np.array([0.30, 0.00, 0.24])
+    robot.interact("bottle")

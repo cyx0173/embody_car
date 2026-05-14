@@ -134,13 +134,14 @@ class ServoController:
         self._ser.close()
 if __name__ == "__main__":
     arm = ServoController()
-    #arm.reset()
+    arm.reset()
     for i in range(1, 5):
         pos = arm.get_position(i)
         print(f"舵机 ID {i} 的当前原始脉冲 (Raw Ticks): {pos}")
     #arm.spin(4,-300)
     #time.sleep(2)
     #arm.brake(4)
+
 
 
 '''
