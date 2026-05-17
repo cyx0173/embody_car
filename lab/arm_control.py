@@ -20,7 +20,7 @@ class ServoController:
     REG_POS_READ = 56
 
     ALL_IDS = [1, 2, 3, 4, 5, 6]
-    HOME_POS = {1: 2185, 2: 863, 3: 3107, 4: 1245, 5: 312, 6: -1}
+    HOME_POS = {1: 2185, 2: 863, 3: 3107, 4: 1245, 5: 312}
 
     def __init__(self, port="/dev/cu.usbmodem5AE60562991", baudrate=1_000_000):
         try:
@@ -36,19 +36,15 @@ class ServoController:
         self.joints_range = {
             name: [cfg["range_min"], cfg["range_max"]] for name, cfg in SERVO_CALIBRATION.items()
         }
+        self._data = {
+            "shoulder_pan":   {"id": 1, "drive_mode": 0, "homing_offset": 2005,  "range_min": 715,  "range_max": 3466},
+            "shoulder_lift":  {"id": 2, "drive_mode": 0, "homing_offset": 3114, "range_min": 822,  "range_max": 3226},
+            "elbow_flex":     {"id": 3, "drive_mode": 0, "homing_offset": 1061,  "range_min": 908,  "range_max": 3123},
+            "wrist_flex":     {"id": 4, "drive_mode": 0, "homing_offset": 2049,  "range_min": 845,  "range_max": 3176},
+            "wrist_roll":     {"id": 5, "drive_mode": 0, "homing_offset": 1900,  "range_min": 0,    "range_max": 4095},
+            "gripper":        {"id": 6, "drive_mode": 0, "homing_offset": 1313,  "range_min": 1507, "range_max": 3026},
+        }
 
-    def rad_to_raw(self, joint_name: str, angle_rad: float) -> int:
-        angle_deg = angle_rad * 180.0 / 3.141592653589793
-        raw = int(angle_deg * 4096.0 / 360.0 + self.middle[joint_name])
-        lo, hi = self.joints_range[joint_name]
-        return max(lo, min(hi, raw))
-
-    def joints_move_radian(self, joints_name_position: list, speed: int = 2000, acc: int = 50):
-        for name, angle_rad in joints_name_position:
-            servo_id = JOINT_ID_MAP[name]
-            raw = self.rad_to_raw(name, angle_rad)
-            self.move_to(servo_id, raw, speed=speed, acc=acc)
-            time.sleep(0.05)
 
     def joints_move_angle(self, joints_name_position: list, speed: int = 1000, acc: int = 50):
         for name, angle_deg in joints_name_position:
@@ -125,22 +121,27 @@ class ServoController:
         for sid, pos in self.HOME_POS.items():
             self.move_to(sid, pos, speed=speed)
         time.sleep(2)
-
+    
     def get_position(self, servo_id):
         return self._send_read(servo_id, self.REG_POS_READ, 2)
 
     def close(self):
         self.brake_all()
         self._ser.close()
+
+    def is_safe(self, servo_id, margin=20):
+        raw = self.get_position(servo_id)
+        print(raw)
+        for cfg in self._data.values():
+            if cfg["id"] == servo_id:
+                lo = cfg["range_min"]
+                hi = cfg["range_max"]
+                return lo + margin <= raw <= hi - margin
+        return False
+    
 if __name__ == "__main__":
     arm = ServoController()
-    #arm.reset()
-    for i in range(1, 5):
-        pos = arm.get_position(i)
-        print(f"舵机 ID {i} 的当前原始脉冲 (Raw Ticks): {pos}")
-    #arm.spin(4,-300)
-    #time.sleep(2)
-    #arm.brake(4)
+    arm.reset()
 
 
 '''

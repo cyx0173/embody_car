@@ -1,7 +1,8 @@
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import torch
 import torch.nn as nn
 from transformers import AutoModel, AutoTokenizer
-
 # --- 1. 配置映射 ---
 MODEL_PATH = 'model/my_local_model'
 WEIGHTS_PATH = 'model/joint_model.pth'

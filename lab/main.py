@@ -39,7 +39,7 @@ class EmbodiedAgent:
                     if reply:
                         self.tts.speak(reply)
                 elif intent == "robotic_interaction":
-                    reply = self._handle_interaction(target, current_image)
+                    reply = self._handle_interaction(target)
                     self.tts.speak(reply)
                 else:
                     self.tts.speak("未能识别有效意图，请重新下达指令。")
@@ -60,8 +60,8 @@ class EmbodiedAgent:
             return None
         return self.visual_qa.answer(current_image, user_text)
 
-    def _handle_interaction(self, target, current_image):
-        raise NotImplementedError("请实现机器人交互逻辑")
+    def _handle_interaction(self, target):
+        self.robotic_interaction.interact(target)
 
 
 if __name__ == "__main__":

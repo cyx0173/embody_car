@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from ultralytics import YOLO
+from Angle_config  import ArmManager
 from interaction.so101 import RobotIKSolver
 import numpy as np
 from arm_control import ServoController
@@ -9,46 +11,196 @@ import time
 import os
 import sys
 from solve_ik import solve_ik
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-class RoboticInteraction:
-    """机器人交互模块"""
+CAMERA_NATIVE_WIDTH = 1920
+CAMERA_NATIVE_HEIGHT = 1080
+CAMERA_SQUARE_CROP_SIZE = min(CAMERA_NATIVE_WIDTH, CAMERA_NATIVE_HEIGHT)
+CAMERA_WORKING_WIDTH = CAMERA_SQUARE_CROP_SIZE // 2
+CAMERA_WORKING_HEIGHT = CAMERA_SQUARE_CROP_SIZE // 2
 
-    def __init__(self,
-        xacro_path: str =  "interaction/so101_follower.urdf.xacro",
-        camera_id: int = 0, base_camera_id: int = 1,
-        model_path: str = "yolo11n.pt"
-        ):
+BASE_YOLO_ROTATE_CODE = None
+HAND_YOLO_ROTATE_CODE = cv2.ROTATE_90_COUNTERCLOCKWISE
+HAND_CAMERA_ROTATE_CODE = None
+
+SAFE_READY_TICKS = {
+    1: 2222,
+    2: 845,
+    3: 3115,
+    4: 898,
+    5: 74,
+}
+SAFE_FOLD_ORDER = (3, 4)
+SAFE_REST_ORDER = (2, 1, 5)
+TARGET_MOVE_ORDER = (1, 2, 3, 4, 5)
+SAFE_MOVE_SPEED = 800
+SAFE_MOVE_ACC = 40
+SAFE_MOVE_SERVO_OVERRIDES = {
+    4: {"speed": 400, "acc": 20},
+}
+SAFE_POSITION_TOLERANCE_TICKS = 80
+SAFE_FOLD_TIMEOUT_S = 8.0
+SAFE_READY_SETTLE_S = 4.0
+
+
+def center_crop_and_resize_frame(frame: np.ndarray, target_size: tuple[int, int]) -> np.ndarray:
+    target_w, target_h = target_size
+    h, w = frame.shape[:2]
+    crop_size = min(h, w)
+    y0 = (h - crop_size) // 2
+    x0 = (w - crop_size) // 2
+    cropped = frame[y0 : y0 + crop_size, x0 : x0 + crop_size]
+    if (cropped.shape[1], cropped.shape[0]) == (target_w, target_h):
+        return cropped
+    return cv2.resize(cropped, (target_w, target_h), interpolation=cv2.INTER_AREA)
+
+
+class RoboticInteraction:
+
+    def __init__(
+        self,
+        xacro_path: str = "interaction/so101_follower.urdf.xacro",
+        camera_id: int = 1,
+        base_camera_id: int = 0,
+        model_path: str = "yolo11s.pt",
+    ):
         self.robot = RobotIKSolver(xacro_path)
         self.arm = ServoController()
+        self.arm_manager = ArmManager()
         self.cap = cv2.VideoCapture(camera_id)
         self.base_cap = cv2.VideoCapture(base_camera_id)
+        self._configure_camera(self.cap, "手部相机")
+        self._configure_camera(self.base_cap, "底座相机")
+
         self.model = YOLO(model_path)
         self.scan_state = "RIGHT"
         self.state = "LOCATE"
         self.scan_speed = 50
 
-    def test_interact(self,target_world_xyz)->None:
+    def _configure_camera(self, cap: cv2.VideoCapture, name: str) -> None:
+        if not cap.isOpened():
+            raise RuntimeError(f"{name}打开失败")
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(CAMERA_NATIVE_WIDTH))
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(CAMERA_NATIVE_HEIGHT))
+
+    def _preprocess_for_calib(self, frame: np.ndarray) -> np.ndarray:
+        return center_crop_and_resize_frame(
+            frame,
+            (CAMERA_WORKING_WIDTH, CAMERA_WORKING_HEIGHT),
+        )
+
+    def _capture_hand_raw(self) -> np.ndarray:
+        ret, frame = self.cap.read()
+        if not ret or frame is None:
+            raise RuntimeError("手部相机读取失败")
+        if HAND_CAMERA_ROTATE_CODE is not None:
+            frame = cv2.rotate(frame, HAND_CAMERA_ROTATE_CODE)
+        return frame
+
+    def _capture_base_raw(self) -> np.ndarray:
+        ret, frame = self.base_cap.read()
+        if not ret or frame is None:
+            raise RuntimeError("底座相机读取失败")
+        return frame
+
+    def _move_ticks(
+        self,
+        ticks: dict[int, int],
+        order: tuple[int, ...],
+        speed: int = 500,
+        acc: int = 20,
+        delay_s: float = 0.25,
+        servo_overrides: dict[int, dict[str, int]] | None = None,
+    ) -> None:
+        for servo_id in order:
+            tick = ticks.get(servo_id)
+            if tick is None or tick < 0:
+                continue
+            override = (servo_overrides or {}).get(servo_id, {})
+            move_speed = override.get("speed", speed)
+            move_acc = override.get("acc", acc)
+            print(f"移动舵机 {servo_id} -> {tick}, speed={move_speed}, acc={move_acc}")
+            self.arm.move_to(servo_id, tick, speed=move_speed, acc=move_acc)
+            time.sleep(delay_s)
+
+    def _wait_until_ticks(
+        self,
+        ticks: dict[int, int],
+        order: tuple[int, ...],
+        timeout_s: float,
+        tolerance_ticks: int = SAFE_POSITION_TOLERANCE_TICKS,
+    ) -> None:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            positions = {servo_id: self.arm.get_position(servo_id) for servo_id in order}
+            is_ready = all(
+                positions[servo_id] >= 0
+                and abs(positions[servo_id] - ticks[servo_id]) <= tolerance_ticks
+                for servo_id in order
+            )
+            print(f"等待舵机 {order} 到位: {positions}")
+            if is_ready:
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"舵机 {order} 未能在 {timeout_s:.1f}s 内到位: {positions}")
+            time.sleep(0.5)
+
+    def _move_to_safe_ready(self) -> None:
+        print("先让 3/4 号回到折叠安全姿态")
+        self._move_ticks(
+            SAFE_READY_TICKS,
+            SAFE_FOLD_ORDER,
+            speed=SAFE_MOVE_SPEED,
+            acc=SAFE_MOVE_ACC,
+            delay_s=0.6,
+            servo_overrides=SAFE_MOVE_SERVO_OVERRIDES,
+        )
+        self._wait_until_ticks(
+            SAFE_READY_TICKS,
+            SAFE_FOLD_ORDER,
+            timeout_s=SAFE_FOLD_TIMEOUT_S,
+        )
+        print("3/4 号已到位，再移动 2/1/5 回初始")
+        self._move_ticks(
+            SAFE_READY_TICKS,
+            SAFE_REST_ORDER,
+            speed=SAFE_MOVE_SPEED,
+            acc=SAFE_MOVE_ACC,
+            delay_s=0.6,
+            servo_overrides=SAFE_MOVE_SERVO_OVERRIDES,
+        )
+        print(f"等待安全姿态稳定 {SAFE_READY_SETTLE_S:.1f}s")
+        time.sleep(SAFE_READY_SETTLE_S)
+
+    def move_to_world_xyz(self, target_world_xyz: np.ndarray, return_to_ready: bool = True) -> None:
         self.target_world_xyz = target_world_xyz
         self.last_ik_solution = solve_ik(self.target_world_xyz)
-        print(self.last_ik_solution)
-        joints_list = [[name, angle] for name, angle in self.last_ik_solution.items()]
-        for name, tick in joints_list:
-            print(name,tick)
-            if 1 <= name <= 4:
-                self.arm.move_to(name, tick)
-
+        print("目标坐标:", self.target_world_xyz)
+        print("目标 tick:", self.last_ik_solution)
+        if return_to_ready:
+            self._move_to_safe_ready()
+        self._move_ticks(
+            self.last_ik_solution,
+            TARGET_MOVE_ORDER,
+            speed=500,
+            acc=20,
+            delay_s=0.25,
+        )
 
     def interact(self, target: str):
-        self.target_world_xyz = self.double_cap_locate(target)
+        extrinsics = "calib/stereo_extrinsics.json"
+        self.target_world_xyz = self.double_cap_locate(target, extrinsics)
         print(self.target_world_xyz)
-        self.last_ik_solution = solve_ik(self.target_world_xyz)
-        print(self.last_ik_solution)
-        joints_list = [[name, angle] for name, angle in self.last_ik_solution.items()]
-        self.arm.joints_move_radian(joints_list)
+        #self.move_to_world_xyz(self.target_world_xyz, return_to_ready=True)
 
-    def detect_object(self, img: np.ndarray, target_class: str) -> tuple[float, float] | None:
+    def detect_object(
+        self,
+        img: np.ndarray,
+        target_class: str,
+        save_path: str | None = None,
+    ) -> tuple[float, float] | None:
         results = self.model(img, verbose=False)
         for r in results:
             for box in r.boxes:
@@ -61,25 +213,151 @@ class RoboticInteraction:
                     xyxy = box.xyxy[0].cpu().numpy()
                     cx = (xyxy[0] + xyxy[2]) / 2
                     cy = (xyxy[1] + xyxy[3]) / 2
-                    cv2.rectangle(img, (int(xyxy[0]), int(xyxy[1])),
-                                    (int(xyxy[2]), int(xyxy[3])), (0, 0, 255), 2)
-                    cv2.putText(img, cls_name, (int(xyxy[0]), int(xyxy[1]) - 8),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                    cv2.rectangle(
+                        img,
+                        (int(xyxy[0]), int(xyxy[1])),
+                        (int(xyxy[2]), int(xyxy[3])),
+                        (0, 0, 255),
+                        2,
+                    )
+                    cv2.putText(
+                        img,
+                        cls_name,
+                        (int(xyxy[0]), int(xyxy[1]) - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        (0, 0, 255),
+                        2,
+                    )
+                    cv2.drawMarker(
+                        img,
+                        (int(cx), int(cy)),
+                        (0, 255, 0),
+                        cv2.MARKER_CROSS,
+                        markerSize=20,
+                        thickness=2,
+                    )
+                    cv2.putText(
+                        img,
+                        f"({cx:.1f}, {cy:.1f})",
+                        (int(cx) + 10, int(cy) - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 0),
+                        2,
+                    )
+                    if save_path:
+                        cv2.imwrite(save_path, img)
+                        print(f"检测结果已保存: {save_path}")
                     return (float(cx), float(cy))
         return None
 
-    def detect_target(self,target: str) -> tuple[np.ndarray, np.ndarray]:
-        ret, frame_1 = self.cap.read()
-        ret, frame_0 = self.base_cap.read()
-        pts_1 = self.detect_object(frame_1, target)
-        pts_2 = self.detect_object(frame_0, target)
-        return pts_1, pts_2
+    def detect_object_with_yolo_rotation(
+        self,
+        img: np.ndarray,
+        target_class: str,
+        rotate_code: int | None = None,
+        save_path: str | None = None,
+    ) -> tuple[float, float] | None:
+        if rotate_code is None:
+            return self.detect_object(img, target_class, save_path=save_path)
 
-    def locate_point(self,target: str) -> None:
+        h, w = img.shape[:2]
+
+        img_rot = cv2.rotate(img, rotate_code)
+        pt_rot = self.detect_object(img_rot, target_class)
+
+        if pt_rot is None:
+            return None
+
+        u_rot, v_rot = pt_rot
+
+        if rotate_code == cv2.ROTATE_90_COUNTERCLOCKWISE:
+            u = w - 1 - v_rot
+            v = u_rot
+            inv_rotate_code = cv2.ROTATE_90_CLOCKWISE
+        elif rotate_code == cv2.ROTATE_90_CLOCKWISE:
+            u = v_rot
+            v = h - 1 - u_rot
+            inv_rotate_code = cv2.ROTATE_90_COUNTERCLOCKWISE
+        elif rotate_code == cv2.ROTATE_180:
+            u = w - 1 - u_rot
+            v = h - 1 - v_rot
+            inv_rotate_code = cv2.ROTATE_180
+        else:
+            raise ValueError(f"Unsupported rotate_code: {rotate_code}")
+
+        img_annotated = img_rot.copy()
+        cv2.drawMarker(
+            img_annotated,
+            (int(u_rot), int(v_rot)),
+            (0, 255, 0),
+            cv2.MARKER_CROSS,
+            markerSize=20,
+            thickness=2,
+        )
+        cv2.putText(
+            img_annotated,
+            f"({u:.1f}, {v:.1f})",
+            (int(u_rot) + 10, int(v_rot) - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 0),
+            2,
+        )
+
+        if save_path:
+            img_saved = cv2.rotate(img_annotated, inv_rotate_code)
+            cv2.imwrite(save_path, img_saved)
+            print(f"检测结果已保存: {save_path}")
+
+        return float(u), float(v)
+    
+    def detect_target(
+        self, target: str, save_dir: str | None = None
+    ) -> tuple[tuple[float, float], tuple[float, float]]:
+        if save_dir is None:
+            save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "image")
+        os.makedirs(save_dir, exist_ok=True)
+        frame_hand_raw = self._capture_hand_raw()
+        frame_base_raw = self._capture_base_raw()
+
+        frame_hand = self._preprocess_for_calib(frame_hand_raw)
+        frame_base = self._preprocess_for_calib(frame_base_raw)
+
+        base_save = os.path.join(save_dir, "base_detection.png") if save_dir else None
+        hand_save = os.path.join(save_dir, "hand_detection.png") if save_dir else None
+
+        pts_hand = self.detect_object_with_yolo_rotation(
+            frame_hand,
+            target,
+            rotate_code=HAND_YOLO_ROTATE_CODE,
+            save_path=hand_save,
+        )
+
+        pts_base = self.detect_object_with_yolo_rotation(
+            frame_base,
+            target,
+            rotate_code=BASE_YOLO_ROTATE_CODE,
+            save_path=base_save,
+        )
+
+        print("手部相机检测点 pts_hand @540x540:", pts_hand)
+        print("底座相机检测点 pts_base @540x540:", pts_base)
+
+        if pts_hand is None:
+            raise RuntimeError(f"手部相机没有检测到目标: {target}")
+        if pts_base is None:
+            raise RuntimeError(f"底座相机没有检测到目标: {target}")
+
+        return pts_base, pts_hand
+
+    def locate_point(self, target: str) -> None:
         self.arm.reset()
         self.state = "LOCATE"
         while self.state == "LOCATE":
-            base_img = self._capture_base()
+            base_img_raw = self._capture_base_raw()
+            base_img = self._preprocess_for_calib(base_img_raw)
             base_uv = self.detect_object(base_img, target)
             if base_uv is None:
                 is_safe, danger = self.arm_manager.safe_detect(1, self.arm)
@@ -98,41 +376,48 @@ class RoboticInteraction:
                 break
             time.sleep(0.1)
 
-    def camera_point_to_base(
-        point_camera: np.ndarray,
-        mounted_link: str,
-        link_T_camera: np.ndarray,
-        link_frames: dict[str, np.ndarray],
-    ) -> np.ndarray:
-        base_T_camera = link_frames[mounted_link] @ link_T_camera
-        homogeneous = np.ones(4, dtype=float)
-        homogeneous[:3] = point_camera
-        return (base_T_camera @ homogeneous)[:3]
+    def convert_4d_to_3d(self, points_4d: np.ndarray) -> np.ndarray:
+        w = points_4d[3]
+        point_3d = points_4d[:3] / w
+        x_cam, y_cam, z_cam = point_3d
+        point_base = np.array([
+            z_cam,    # 前方 -> X
+            -x_cam,   # 左方 -> Y
+            -y_cam,   # 上方 -> Z
+            ], dtype=np.float64)
+        return point_base
 
-    def convert_4d_to_3d(self,points_4d: np.ndarray) -> np.ndarray:
-        camera1_point_3d = points_4d[:3] / points_4d[3]
-        gripper_point_3d = self.camera_point_to_base(camera1_point_3d, "gripper_link", self.link_T_camera, self.link_frames)
-        return gripper_point_3d
-
-    #双目定位代码
-    def double_cap_locate(self,target: str, extrinsics_path: str) -> np.ndarray:
+    def double_cap_locate(self, target: str, extrinsics_path: str) -> np.ndarray:
         self.locate_point(target)
-        with open(extrinsics_path, 'r') as f:
+        with open(extrinsics_path, "r") as f:
             ext = json.load(f)
-        P1 = np.array(ext['P1_rectification'])
-        P2 = np.array(ext['P2_rectification'])
-        #手部相机p2 底座相机p1 
-        pts_1,pts_2 = self.detect_target(target)
-        points_4d = cv2.triangulatePoints(P2, P1, pts_2, pts_1)
-        #返回相对手部相机的坐标
-        point_3d = self.convert_4d_to_3d(points_4d)
-        return point_3d
+
+        P1 = np.array(
+            ext.get("P1_base_as_world", ext.get("P1_raw", ext["P1_rectification"])),
+            dtype=np.float64,
+        )
+        P2 = np.array(
+            ext.get("P2_hand_from_base", ext.get("P2_raw", ext["P2_rectification"])),
+            dtype=np.float64,
+        )
+
+        save_dir = os.path.join(os.path.dirname(extrinsics_path), "detection_results")
+        os.makedirs(save_dir, exist_ok=True)
+        pts_base, pts_hand = self.detect_target(target, save_dir=save_dir)
+
+        pts_base = np.array(pts_base, dtype=np.float64).reshape(2, 1)
+        pts_hand = np.array(pts_hand, dtype=np.float64).reshape(2, 1)
+
+        print("用于三角化的底座点 pts_base:", pts_base.ravel())
+        print("用于三角化的手部点 pts_hand:", pts_hand.ravel())
+
+        points_4d = cv2.triangulatePoints(P1, P2, pts_base, pts_hand)
+        point_3d_base = self.convert_4d_to_3d(points_4d)
+
+        print("三维坐标 in base-camera frame [m]:", point_3d_base)
+        return point_3d_base
+
+
 if __name__ == "__main__":
     robot = RoboticInteraction()
-    depth = 0.60      # 60cm
-    horizontal = 0 # 5cm
-    height = 0.30     # 30cm
-    robot.arm.reset()
-    time.sleep(2)
-    point = np.array([0.25, 0, 0])
-    robot.test_interact(point)
+    robot.interact("bottle")

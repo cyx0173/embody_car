@@ -62,15 +62,15 @@ class VisualTracking:
         self.arm.brake(4)
         self.arm.brake(5)
 
-        is_safe, danger = self.arm_manager.safe_detect(1, self.arm)
+        is_safe = self.arm.is_safe(1)
         if self.scan_state == "RIGHT":
             self.arm.spin(1, self.scan_speed)
-            if danger == "right":
+            if not is_safe:
                 self.arm.brake(1)
                 self.scan_state = "LEFT"
         elif self.scan_state == "LEFT":
             self.arm.spin(1, -self.scan_speed)
-            if danger == "left":
+            if not is_safe:
                 self.arm.brake(1)
                 self.scan_state = "RIGHT"
 

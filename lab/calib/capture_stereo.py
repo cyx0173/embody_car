@@ -32,8 +32,8 @@ def main() -> None:
     arm.reset()
 
     parser = argparse.ArgumentParser(description="Stereo image capture for extrinsic calibration.")
-    parser.add_argument("--cap0", type=int, default=0, help="Camera index for left (base) camera.")
-    parser.add_argument("--cap1", type=int, default=1, help="Camera index for right (aux) camera.")
+    parser.add_argument("--cap0", type=int, default=1, help="Camera index for left (base) camera.")
+    parser.add_argument("--cap1", type=int, default=0, help="Camera index for right (aux) camera.")
     parser.add_argument("--cols", type=int, default=9, help="Chessboard inner corners along width.")
     parser.add_argument("--rows", type=int, default=6, help="Chessboard inner corners along height.")
     parser.add_argument(
