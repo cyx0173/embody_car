@@ -112,6 +112,36 @@ class ServoController:
     def brake(self, servo_id):
         self.spin(servo_id, 0, acc=255)
 
+    def spin_wheel(self, speed = 100, acc=50):
+        for i in(7,10):
+            self.spin(i,speed)
+    
+    def move_wheel(self, mode, speed, acc=50):
+        speed = int(speed)
+        half_speed = int(round(speed * 0.5))
+        if mode == 0:
+            self.spin(8, -speed, acc=acc)
+            self.spin(9,  speed, acc=acc)
+            self.spin(7,  0,     acc=acc)
+        elif mode == 1:
+            self.spin(8,  speed, acc=acc)
+            self.spin(9, -speed, acc=acc)
+            self.spin(7,  0,     acc=acc)
+        elif mode == 2:
+            self.spin(8,  half_speed, acc=acc)
+            self.spin(9,  half_speed, acc=acc)
+            self.spin(7, -speed,      acc=acc)
+        elif mode == 3:
+            self.spin(8, -half_speed, acc=acc)
+            self.spin(9, -half_speed, acc=acc)
+            self.spin(7,  speed,      acc=acc)
+        elif mode == 4:
+            self.spin(8, 0, acc=255)
+            self.spin(9, 0, acc=255)
+            self.spin(7, 0, acc=255)
+        else:
+            raise ValueError(f"不支持的 mode: {mode}")
+
     def brake_all(self):
         for sid in self.ALL_IDS:
             self.brake(sid)

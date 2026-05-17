@@ -54,14 +54,22 @@ SAFE_READY_TICKS = {
 }
 SAFE_FOLD_ORDER = (3, 4)
 SAFE_REST_ORDER = (2, 1, 5)
-TARGET_MOVE_ORDER = (1, 2, 3, 4, 5)
+TARGET_MOVE_ORDER = (3, 2, 4, 1, 5)
 SAFE_MOVE_SPEED = 800
 SAFE_MOVE_ACC = 40
 SAFE_MOVE_SERVO_OVERRIDES = {
     4: {"speed": 400, "acc": 20},
 }
+TARGET_MOVE_SPEED = 800
+TARGET_MOVE_ACC = 40
+TARGET_MOVE_SERVO_OVERRIDES = {
+    2: {"speed": 900, "acc": 45},
+    4: {"speed": 400, "acc": 20},
+}
 SAFE_POSITION_TOLERANCE_TICKS = 80
+TARGET_POSITION_TOLERANCE_TICKS = 80
 SAFE_FOLD_TIMEOUT_S = 8.0
+TARGET_AXIS_TIMEOUT_S = 8.0
 SAFE_READY_SETTLE_S = 4.0
 
 
@@ -138,6 +146,9 @@ class RoboticInteraction:
         acc: int = 20,
         delay_s: float = 0.25,
         servo_overrides: dict[int, dict[str, int]] | None = None,
+        wait_each: bool = False,
+        wait_timeout_s: float = TARGET_AXIS_TIMEOUT_S,
+        tolerance_ticks: int = TARGET_POSITION_TOLERANCE_TICKS,
     ) -> None:
         for servo_id in order:
             tick = ticks.get(servo_id)
@@ -149,6 +160,13 @@ class RoboticInteraction:
             print(f"移动舵机 {servo_id} -> {tick}, speed={move_speed}, acc={move_acc}")
             self.arm.move_to(servo_id, tick, speed=move_speed, acc=move_acc)
             time.sleep(delay_s)
+            if wait_each:
+                self._wait_until_ticks(
+                    ticks,
+                    (servo_id,),
+                    timeout_s=wait_timeout_s,
+                    tolerance_ticks=tolerance_ticks,
+                )
 
     def _wait_until_ticks(
         self,
@@ -209,9 +227,13 @@ class RoboticInteraction:
         self._move_ticks(
             self.last_ik_solution,
             TARGET_MOVE_ORDER,
-            speed=500,
-            acc=20,
+            speed=TARGET_MOVE_SPEED,
+            acc=TARGET_MOVE_ACC,
             delay_s=0.25,
+            servo_overrides=TARGET_MOVE_SERVO_OVERRIDES,
+            wait_each=True,
+            wait_timeout_s=TARGET_AXIS_TIMEOUT_S,
+            tolerance_ticks=TARGET_POSITION_TOLERANCE_TICKS,
         )
 
     def interact(self, target: str):
@@ -219,6 +241,7 @@ class RoboticInteraction:
         self.target_world_xyz = self.double_cap_locate(target, extrinsics)
         print(self.target_world_xyz)
         self.move_to_world_xyz(self.target_world_xyz)
+        return self.target_world_xyz
 
     def detect_object(
         self,
@@ -465,39 +488,41 @@ class RoboticInteraction:
     def locate_point(self, target: str) -> tuple[float, float]:
         """Find and roughly center the target using only the base camera rotation."""
         self.state = "LOCATE"
-        self.scan_state = "RIGHT"
-        stable_frames = 0
-        start_time = time.monotonic()
 
-        print("开始仅通过底部相机旋转寻找目标，不移动手部相机相关关节")
+        stable_frames = 0
+
         try:
             while self.state == "LOCATE":
-                if time.monotonic() - start_time > BASE_SEARCH_TIMEOUT_S:
-                    raise TimeoutError(f"底部相机搜索目标超时: {target}")
-
                 base_uv = self._detect_base_target(target)
+
+                # 1. 没检测到目标：扫视寻找，不能继续进入 align
                 if base_uv is None:
+                    print("底部相机初始没有检测到目标，开始扫视寻找...")
                     stable_frames = 0
+
                     if self.last_base_align_speed is not None:
                         self.base_align_lost_frames += 1
+
+                        # 短时间丢失：沿用原来的扫视动作继续找
                         if self.base_align_lost_frames < BASE_ALIGN_LOST_RESET_FRAMES:
-                            print(
-                                "对准阶段短暂丢失目标，保持原方向低速找回: "
-                                f"lost_frames={self.base_align_lost_frames}, speed={self.last_base_align_speed}"
-                            )
-                            self._spin_base_search_axis(self.last_base_align_speed)
-                            time.sleep(BASE_SEARCH_INTERVAL_S)
+                            self.arm.spin_wheel(BASE_SCAN_SPEED)
                             continue
-                        print("对准阶段丢失目标过久，回到普通扫视")
+
+                        # 长时间丢失：清空上一次对准速度
                         self.last_base_align_speed = None
                         self.base_align_lost_frames = 0
-                    self.last_base_align_abs_error = None
-                    self._scan_with_base_camera()
-                    time.sleep(BASE_SEARCH_INTERVAL_S)
+
+                    # 没有历史对准方向时，默认扫视
+                    self.arm.spin_wheel(BASE_SCAN_SPEED)
                     continue
 
+                # 2. 检测到目标：清空丢失计数
+                self.base_align_lost_frames = 0
+
+                # 3. 对准目标
                 if self._align_base_camera_to_target(base_uv):
                     stable_frames += 1
+
                     if stable_frames >= BASE_SEARCH_STABLE_FRAMES:
                         self.state = "TRACK"
                         print("底部相机稳定找到目标，准备进行双目定位")
@@ -505,7 +530,6 @@ class RoboticInteraction:
                 else:
                     stable_frames = 0
 
-                time.sleep(BASE_SEARCH_INTERVAL_S)
         finally:
             self.arm.brake(BASE_SEARCH_AXIS_ID)
 
