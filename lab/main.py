@@ -9,7 +9,7 @@ from robotic_interaction import RoboticInteraction
 class EmbodiedAgent:
     def __init__(self):
         self.asr = ASR()
-        self.nlu = NLU()
+        self.nlu = NLU().init()
         self.tts = TTS()
         self.visual_tracking = VisualTracking()
         self.visual_qa = VisualQA()
@@ -25,20 +25,20 @@ class EmbodiedAgent:
 
                 print(f"用户: {user_text}")
 
-                parsed_data = self.nlu.parse(user_text)
+                parsed_data = self.nlu.predict(user_text)
                 intent = parsed_data.get("intent")
-                target = parsed_data.get("target_object")
+                target = parsed_data.get("target")
 
                 current_image = self._capture_image()
 
                 if intent == "visual_tracking":
                     reply = self._handle_tracking(target, current_image)
                     self.tts.speak(reply)
-                elif intent == "visual_qa":
+                elif intent == "visual_understanding":
                     reply = self._handle_vqa(user_text, current_image)
                     if reply:
                         self.tts.speak(reply)
-                elif intent == "robotic_interaction":
+                elif intent == "object_interaction":
                     reply = self._handle_interaction(target)
                     self.tts.speak(reply)
                 else:
@@ -55,13 +55,11 @@ class EmbodiedAgent:
         return "目标追踪完成"
 
     def _handle_vqa(self, user_text, current_image):
-        if current_image is None:
-            print("[错误] 图像为空，请检查摄像头或图像采集逻辑。")
-            return None
         return self.visual_qa.answer(current_image, user_text)
 
     def _handle_interaction(self, target):
         self.robotic_interaction.interact(target)
+        return "交互完成"
 
 
 if __name__ == "__main__":

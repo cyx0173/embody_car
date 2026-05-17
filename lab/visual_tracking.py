@@ -7,7 +7,7 @@ from arm_control import ServoController
 from Angle_config import ArmManager
 
 class VisualTracking:
-    def __init__(self, model_path: str = "yolo11n.pt", camera_id: int = 0, base_camera_id: int = 1) -> None:
+    def __init__(self, model_path: str = "yolo11s.pt", camera_id: int = 0, base_camera_id: int = 1) -> None:
         self.cap = cv2.VideoCapture(camera_id)
         self.base_cap = cv2.VideoCapture(base_camera_id)
         self.model = YOLO(model_path)

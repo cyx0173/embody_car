@@ -1,131 +1,176 @@
 import os
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+import json
+import sys
+from typing import Any
 import torch
-import torch.nn as nn
-from transformers import AutoModel, AutoTokenizer
-# --- 1. 配置映射 ---
-MODEL_PATH = 'model/my_local_model'
-WEIGHTS_PATH = 'model/joint_model.pth'
-INTENT_MAP = {
-    "视觉追踪": 0,
-    "视觉识别": 1,
-    "物品交互": 2
-}
-SLOT_MAP = {
-    "物品逻辑": 0
-}
-INV_INTENT_MAP = {v: k for k, v in INTENT_MAP.items()}
-INV_SLOT_MAP = {v: k for k, v in SLOT_MAP.items()}
+from model.SCTPCommandParser import (
+    SCTPCommandParser,
+    SCHEMA_VOCAB,
+    INTENTS,
+    TARGETS,
+    COCO_CLASSES,
+    COCO_TO_YOLO_ID,
+    INTENT_TO_ID,
+    TARGET_TO_ID,
+    load_tokenizer,
+    get_device,
+)
 
-# --- 2. 模型结构定义 ---
-class GlobalPointer(nn.Module):
-    def __init__(self, hidden_size, num_slots, head_size=64):
-        super().__init__()
-        self.num_slots, self.head_size = num_slots, head_size
-        self.dense = nn.Linear(hidden_size, num_slots * head_size * 2)
-
-    def forward(self, x, mask):
-        batch_size, seq_len = x.shape[0], x.shape[1]
-        outputs = self.dense(x).view(batch_size, seq_len, self.num_slots, self.head_size, 2)
-        qw, kw = outputs[..., 0], outputs[..., 1]
-        pos = torch.arange(seq_len, dtype=torch.float, device=x.device).unsqueeze(1)
-        indices = torch.arange(self.head_size // 2, dtype=torch.float, device=x.device).unsqueeze(0)
-        indices = torch.pow(10000, -2 * indices / self.head_size)
-        pos_emb = pos * indices
-        cos, sin = torch.cos(pos_emb), torch.sin(pos_emb)
-        pos_emb = torch.stack([cos, sin], dim=-1).reshape(1, seq_len, 1, self.head_size)
-        cos_pos, sin_pos = pos_emb[..., 0::2].repeat_interleave(2, -1), pos_emb[..., 1::2].repeat_interleave(2, -1)
-        qw2 = torch.stack([-qw[..., 1::2], qw[..., ::2]], -1).reshape_as(qw)
-        kw2 = torch.stack([-kw[..., 1::2], kw[..., ::2]], -1).reshape_as(kw)
-        qw, kw = qw * cos_pos + qw2 * sin_pos, kw * cos_pos + kw2 * sin_pos
-        logits = torch.einsum('bmhd,bnhd->bhmn', qw, kw)
-        mask = mask.unsqueeze(1).unsqueeze(1)
-        logits = logits - (1 - mask * mask.transpose(-1, -2)) * 1e4
-        logits = logits - torch.tril(torch.ones_like(logits), -1) * 1e4
-        return logits / (self.head_size**0.5)
-
-class JointModel(nn.Module):
-    def __init__(self, path):
-        super().__init__()
-        self.backbone = AutoModel.from_pretrained(path)
-        self.i_head = nn.Linear(384, len(INTENT_MAP))
-        self.s_head = GlobalPointer(384, len(SLOT_MAP))
-
-    def forward(self, ids, mask):
-        x = self.backbone(ids, mask).last_hidden_state
-        return self.i_head(x[:, 0, :]), self.s_head(x, mask)
+MODEL_PATH = "model/my_local_model"
+CHECKPOINT = "model/nlu.pt"
+MAX_LEN = 128
 
 
-# --- 3. NLU 封装 ---
 class NLU:
-    def __init__(self):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, fix_mistral_regex=True)
-        self.model = JointModel(MODEL_PATH).to(self.device)
-        self.model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=self.device))
-        self.model.eval()
+    def __init__(
+        self,
+        model_path: str = MODEL_PATH,
+        checkpoint: str = CHECKPOINT,
+        max_len: int = MAX_LEN,
+        device: str | None = None,
+    ):
+        self.model_path = model_path
+        self.checkpoint = checkpoint
+        self.max_len = max_len
+        self._device_str = device
+        self._model: SCTPCommandParser | None = None
+        self._tokenizer: Any = None
+        self._device: torch.device | None = None
 
-    def parse(self, text):
-        if not text or not text.strip():
-            return {"intent": None, "target_object": None}
+    def init(self) -> "NLU":
+        """加载模型和分词器，返回自身以支持链式调用。"""
+        if self._model is not None:
+            return self
 
-        inputs = self.tokenizer(
-            text, return_tensors="pt", padding=True, truncation=True, max_length=128
-        ).to(self.device)
+        self._device = torch.device(
+            self._device_str
+            if self._device_str
+            else ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        print(f"Using device: {self._device}")
 
-        with torch.no_grad():
-            i_logits, s_logits = self.model(inputs["input_ids"], inputs["attention_mask"])
+        self._tokenizer = load_tokenizer(self.model_path)
+        self._model = SCTPCommandParser(
+            model_path=self.model_path,
+            schema_vocab_size=len(SCHEMA_VOCAB),
+            num_intents=len(INTENTS),
+            num_targets=len(TARGETS),
+        ).to(self._device)
 
-        probs = torch.sigmoid(i_logits[0])
-        active_intents = []
-        for idx, prob in enumerate(probs):
-            if prob > 0.5:
-                active_intents.append((INV_INTENT_MAP[idx], prob.item()))
+        ckpt = torch.load(self.checkpoint, map_location=self._device, weights_only=False)
+        self._model.load_state_dict(ckpt["model_state"])
+        self._model.eval()
 
-        if not active_intents:
-            return {"intent": None, "target_object": None}
+        return self
 
-        top_intent, top_prob = max(active_intents, key=lambda x: x[1])
-        intent_key = {
-            "视觉追踪": "visual_tracking",
-            "视觉识别": "visual_qa",
-            "物品交互": "robotic_interaction",
-        }.get(top_intent, top_intent)
+    @property
+    def ready(self) -> bool:
+        return self._model is not None
 
-        candidates = []
-        scores = s_logits[0]
-        for slot_idx in range(len(SLOT_MAP)):
-            score_matrix = scores[slot_idx]
-            res = torch.where(score_matrix > -0.5)
-            for start, end in zip(*res):
-                if start == 0 or end == 0:
-                    continue
-                score = score_matrix[start, end].item()
-                candidates.append((start.item(), end.item(), slot_idx, score))
+    def _render(self, intent: str, target: str, query: str,
+                intent_conf: float | None = None,
+                target_conf: float | None = None) -> dict[str, Any]:
+        target_value = None if target == "none" else target
+        target_id = None if target_value is None else COCO_TO_YOLO_ID.get(target_value)
 
-        candidates.sort(key=lambda x: x[3], reverse=True)
-        final_entities, used_tokens = [], set()
-        for s, e, s_idx, score in candidates:
-            span_indices = set(range(s, e + 1))
-            if not (span_indices & used_tokens):
-                raw_word = self.tokenizer.decode(inputs["input_ids"][0][s : e + 1])
-                clean_word = raw_word.replace("</s>", "").replace(" ", "").strip()
-                if clean_word:
-                    final_entities.append(
-                        {"slot": INV_SLOT_MAP[s_idx], "value": clean_word, "score": score}
-                    )
-                    used_tokens.update(span_indices)
+        valid = True
+        error = None
+        need_clarification = False
 
-        target_object = final_entities[0]["value"] if final_entities else None
+        if intent in ("visual_tracking", "object_interaction") and target_value is None:
+            valid = False
+            error = "missing_target"
+            need_clarification = True
 
-        return {"intent": intent_key, "target_object": target_object}
+        if target_value is not None and target_id is None:
+            valid = False
+            error = "target_not_in_coco"
+            need_clarification = True
+
+        return {
+            "intent": intent,
+            "target": target_value,
+            "target_id": target_id,
+            "valid": valid,
+            "need_clarification": need_clarification,
+            "error": error,
+            "query": query,
+            "intent_confidence": intent_conf,
+            "target_confidence": target_conf,
+        }
+
+    @torch.no_grad()
+    def predict(self, text: str) -> dict[str, Any]:
+        if self._model is None:
+            raise RuntimeError("模型未初始化，请先调用 init()")
+
+        enc = self._tokenizer(
+            text,
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_len,
+            return_tensors="pt",
+        )
+        input_ids = enc["input_ids"].to(self._device)
+        attention_mask = enc["attention_mask"].to(self._device)
+
+        generated = [SCHEMA_VOCAB.bos_id]
+        for _ in range(3):
+            decoder_input_ids = torch.tensor(
+                [generated], dtype=torch.long, device=self._device
+            )
+            schema_logits, intent_logits, target_logits = self._model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                decoder_input_ids=decoder_input_ids,
+            )
+            last_logits = schema_logits[0, -1, :].clone()
+
+            allowed = SCHEMA_VOCAB.allowed_next_ids(generated)
+            grammar_mask = torch.full_like(last_logits, fill_value=-1e9)
+            grammar_mask[allowed] = 0.0
+
+            constrained_logits = last_logits + grammar_mask
+            next_id = int(torch.argmax(constrained_logits).item())
+            generated.append(next_id)
+            if next_id == SCHEMA_VOCAB.eos_id:
+                break
+
+        intent, target = SCHEMA_VOCAB.parse_ids(generated)
+
+        # confidence
+        decoder_input_ids = torch.tensor(
+            [generated[:-1] if len(generated) > 1 else generated],
+            dtype=torch.long,
+            device=self._device,
+        )
+        _, intent_logits, target_logits = self._model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            decoder_input_ids=decoder_input_ids,
+        )
+        intent_probs = torch.softmax(intent_logits, dim=-1)[0]
+        target_probs = torch.softmax(target_logits, dim=-1)[0]
+        intent_conf = float(intent_probs[INTENT_TO_ID[intent]].item())
+        target_conf = float(target_probs[TARGET_TO_ID[target]].item())
+
+        return self._render(intent, target, text, intent_conf, target_conf)
+
+def main():
+    nlu = NLU().init()
+    print("Model loaded. Enter text to parse (Ctrl+C to exit):\n")
+    while True:
+        try:
+            text = input("> ").strip()
+            if not text:
+                continue
+            result = nlu.predict(text)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        except KeyboardInterrupt:
+            print("\nBye.")
+            break
 
 
 if __name__ == "__main__":
-    nlu = NLU()
-    while True:
-        text = input("\n请输入测试语句 > ").strip()
-        if text.lower() in ("q", "exit"):
-            break
-        result = nlu.parse(text)
-        print(f"intent: {result['intent']}, target_object: {result['target_object']}")
+    main()
