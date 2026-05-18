@@ -14,6 +14,7 @@ class EmbodiedAgent:
         self.visual_tracking = None
         self.visual_qa = None
         self.robotic_interaction = None
+        self.chatbot = None
         self.camera = None
         self.camera_id = 0
 
@@ -29,6 +30,11 @@ class EmbodiedAgent:
                 if self._is_exit_command(user_text):
                     self._speak("好的，已退出。")
                     break
+
+                if not self._is_task_command(user_text):
+                    reply = self._handle_chat(user_text)
+                    self._speak(reply)
+                    continue
 
                 parsed_data = self.nlu.predict(user_text)
                 print(f"NLU: {parsed_data}")
@@ -75,6 +81,44 @@ class EmbodiedAgent:
     def _is_exit_command(self, text: str) -> bool:
         return any(word in text for word in ("退出", "停止", "结束", "拜拜", "再见"))
 
+    def _is_task_command(self, text: str) -> bool:
+        tracking_words = ("追踪", "跟随", "跟着", "看着", "盯着", "看我的")
+        interaction_words = ("抓", "拿", "碰", "触碰", "点", "按", "推", "移动到", "靠近")
+        visual_words = (
+            "画面",
+            "图片",
+            "图里",
+            "镜头",
+            "相机",
+            "看到",
+            "看见",
+            "前面",
+            "这里",
+            "那边",
+            "我正在",
+            "电脑上",
+            "屏幕",
+            "做什么",
+        )
+        target_words = (
+            "人",
+            "瓶子",
+            "杯子",
+            "电脑",
+            "屏幕",
+            "手机",
+            "键盘",
+            "鼠标",
+            "椅子",
+            "书",
+        )
+
+        if any(word in text for word in tracking_words + interaction_words + visual_words):
+            return True
+        return any(action in text for action in ("找", "寻找")) and any(
+            target in text for target in target_words
+        )
+
     def _format_nlu_error(self, parsed_data):
         if parsed_data.get("error") == "missing_target":
             return "我还不知道要操作哪个目标，请说清楚目标物体。"
@@ -107,6 +151,13 @@ class EmbodiedAgent:
             self.robotic_interaction = RoboticInteraction()
         return self.robotic_interaction
 
+    def _get_chatbot(self):
+        if self.chatbot is None:
+            from chat import ChatBot
+
+            self.chatbot = ChatBot()
+        return self.chatbot
+
     def _handle_tracking(self, target, current_image):
         tracker = self._get_visual_tracking()
         tracker.track(target)
@@ -114,6 +165,9 @@ class EmbodiedAgent:
 
     def _handle_vqa(self, user_text, current_image):
         return self._get_visual_qa().answer(current_image, user_text)
+
+    def _handle_chat(self, user_text):
+        return self._get_chatbot().reply(user_text)
 
     def _handle_interaction(self, target):
         if not target:
