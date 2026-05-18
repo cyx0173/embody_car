@@ -4,6 +4,7 @@ from tts import TTS as TTS
 
 import cv2
 import numpy as np
+import threading
 
 
 class EmbodiedAgent:
@@ -17,6 +18,7 @@ class EmbodiedAgent:
         self.chatbot = None
         self.camera = None
         self.camera_id = 0
+        self.tracking_thread = None
 
     def run(self):
         print("具身智能助手已启动，请下达指令...")
@@ -28,10 +30,13 @@ class EmbodiedAgent:
 
                 print(f"用户: {user_text}")
                 if self._is_exit_command(user_text):
+                    self._stop_tracking_if_running()
                     self._speak("好的，已退出。")
                     break
 
                 if not self._is_task_command(user_text):
+                    self._stop_tracking_if_running()
+                    self._reset_active_arm_if_needed(required=False)
                     reply = self._handle_chat(user_text)
                     self._speak(reply)
                     continue
@@ -44,6 +49,8 @@ class EmbodiedAgent:
 
                 intent = parsed_data.get("intent")
                 target = parsed_data.get("target")
+                self._stop_tracking_if_running()
+                self._reset_arm_before_intent(intent)
 
                 if intent == "visual_tracking":
                     reply = self._handle_tracking(target, None)
@@ -77,6 +84,11 @@ class EmbodiedAgent:
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return rgb.astype(np.float32) / 255.0
+
+    def _release_shared_camera(self) -> None:
+        if self.camera is not None:
+            self.camera.release()
+            self.camera = None
 
     def _is_exit_command(self, text: str) -> bool:
         return any(word in text for word in ("退出", "停止", "结束", "拜拜", "再见"))
@@ -130,6 +142,45 @@ class EmbodiedAgent:
         print(f"助手: {text}")
         self.tts.speak(text)
 
+    def _reset_arm(self, arm, reason: str) -> None:
+        print(f"准备执行{reason}，机械臂先回到 reset 位置")
+        arm.reset()
+
+    def _tracking_is_running(self) -> bool:
+        return self.tracking_thread is not None and self.tracking_thread.is_alive()
+
+    def _stop_tracking_if_running(self) -> None:
+        if self.visual_tracking is not None and self._tracking_is_running():
+            print("检测到正在追踪，先停止追踪")
+            self.visual_tracking.stop()
+            self.tracking_thread.join(timeout=2.0)
+        self.tracking_thread = None
+
+    def _reset_active_arm_if_needed(self, required: bool = False) -> bool:
+        arm = None
+        if self.robotic_interaction is not None:
+            arm = self.robotic_interaction.arm
+        elif self.visual_tracking is not None:
+            arm = self.visual_tracking.arm
+
+        if arm is None:
+            if required:
+                raise RuntimeError("需要机械臂 reset，但当前没有可用的机械臂控制器")
+            return False
+
+        self._reset_arm(arm, "下一步操作")
+        return True
+
+    def _reset_arm_before_intent(self, intent: str | None) -> None:
+        if intent == "object_interaction":
+            self._release_shared_camera()
+            self._reset_arm(self._get_robotic_interaction().arm, "物体交互")
+        elif intent == "visual_tracking":
+            self._release_shared_camera()
+            self._reset_arm(self._get_visual_tracking().arm, "目标追踪")
+        else:
+            self._reset_active_arm_if_needed(required=False)
+
     def _get_visual_tracking(self):
         if self.visual_tracking is None:
             from visual_tracking import VisualTracking
@@ -159,9 +210,17 @@ class EmbodiedAgent:
         return self.chatbot
 
     def _handle_tracking(self, target, current_image):
+        if not target:
+            return "请告诉我要追踪哪个目标。"
+        self._stop_tracking_if_running()
         tracker = self._get_visual_tracking()
-        tracker.track(target)
-        return "目标追踪完成"
+        self.tracking_thread = threading.Thread(
+            target=tracker.track,
+            args=(target,),
+            daemon=True,
+        )
+        self.tracking_thread.start()
+        return f"我开始追踪{target}了。"
 
     def _handle_vqa(self, user_text, current_image):
         return self._get_visual_qa().answer(current_image, user_text)
@@ -174,8 +233,11 @@ class EmbodiedAgent:
             return "请告诉我要操作哪个目标。"
         self._speak(f"好的，我开始寻找{target}，请注意机械臂移动。")
         robot = self._get_robotic_interaction()
-        robot.interact(target)
-        return f"{target}交互完成"
+        try:
+            robot.interact(target)
+        finally:
+            robot.state = "IDLE"
+        return f"我已经移动到{target}附近了，可以继续和我说话。"
 
 
 if __name__ == "__main__":

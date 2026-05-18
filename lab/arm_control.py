@@ -21,7 +21,8 @@ class ServoController:
 
     ALL_IDS = [1, 2, 3, 4, 5, 6]
     WHEEL_IDS = [7, 8, 9, 10]
-    HOME_POS = {1: 2185, 2: 863, 3: 3107, 4: 1245, 5: 312}
+    HOME_POS = {1: 2000, 2: 863, 3: 3107, 4: 1245, 5: 312}
+    RESET_ORDER_GROUPS = ((3, 4), (2,), (1, 5))
 
     def __init__(self, port="/dev/cu.usbmodem5AE60562991", baudrate=1_000_000):
         try:
@@ -114,7 +115,7 @@ class ServoController:
         self.spin(servo_id, 0, acc=255)
 
     def spin_wheel(self, speed = 100, acc=50):
-        for i in (7, 10):
+        for i in (7, 8, 9):
             self.spin(i, speed, acc=acc)
     
     def move_wheel(self, mode, speed, acc=50):
@@ -152,11 +153,16 @@ class ServoController:
         for sid in self.ALL_IDS:
             self.brake(sid)
 
-    def reset(self, speed=1000):
-        print("🏠 正在全轴复位...")
-        for sid, pos in self.HOME_POS.items():
-            self.move_to(sid, pos, speed=speed)
-        time.sleep(2)
+    def reset(self, speed=1300, acc=55, stage_delay=0.9):
+        print("🏠 正在分阶段复位...")
+        for group in self.RESET_ORDER_GROUPS:
+            print(f"复位舵机组 {group}")
+            for sid in group:
+                pos = self.HOME_POS.get(sid)
+                if pos is None:
+                    continue
+                self.move_to(sid, pos, speed=speed, acc=acc)
+            time.sleep(stage_delay)
     
     def get_position(self, servo_id):
         return self._send_read(servo_id, self.REG_POS_READ, 2)
