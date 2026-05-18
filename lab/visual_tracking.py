@@ -46,7 +46,7 @@ BASE_FALLBACK_MAX_SPEED = int(os.getenv("TRACK_BASE_FALLBACK_MAX_SPEED", "220"))
 WRIST_FLEX_TRACK_TICKS = 1285
 WRIST_ROLL_TRACK_TICKS = 69
 TRACK_LOOP_INTERVAL_S = float(os.getenv("TRACK_LOOP_INTERVAL_S", "0.01"))
-SHOW_TRACKING_WINDOW = os.getenv("TRACK_SHOW_WINDOW", "1") == "1"
+SHOW_TRACKING_WINDOW = os.getenv("TRACK_SHOW_WINDOW", "0") == "1"
 DETECTION_LOG_INTERVAL_S = 1.0
 TRACKING_LOG_INTERVAL_S = 0.5
 TRACK_DRY_RUN = os.getenv("TRACK_DRY_RUN", "0") == "1"
@@ -229,6 +229,7 @@ class VisualTracking:
             self.arm.brake(SEARCH_AXIS_ID)
             self.arm.brake(4)
             self.arm.brake(5)
+            self.release_cameras()
             if SHOW_TRACKING_WINDOW:
                 cv2.destroyAllWindows()
 
@@ -241,6 +242,14 @@ class VisualTracking:
         self.arm.brake(SEARCH_AXIS_ID)
         self.arm.brake(4)
         self.arm.brake(5)
+
+    def release_cameras(self) -> None:
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+        if self.base_cap is not None:
+            self.base_cap.release()
+            self.base_cap = None
 
     def _search_move(self):
         self.arm.brake(4)
@@ -475,6 +484,8 @@ class VisualTracking:
 
 
 if __name__ == "__main__":
+    os.environ.setdefault("TRACK_SHOW_WINDOW", "1")
+    SHOW_TRACKING_WINDOW = os.getenv("TRACK_SHOW_WINDOW", "0") == "1"
     tracker = VisualTracking()
     time.sleep(2)
     tracker.track(target_class="bottle")

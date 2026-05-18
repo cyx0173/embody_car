@@ -968,4 +968,4 @@ class RoboticInteraction:
 
 if __name__ == "__main__":
     robot = RoboticInteraction()
-    robot.interact("bottle")
+    robot.interact("orange")

@@ -29,6 +29,13 @@ class EmbodiedAgent:
                     continue
 
                 print(f"用户: {user_text}")
+                if self._is_stop_tracking_command(user_text):
+                    if self._stop_tracking_if_running():
+                        self._speak("好的，我已停止追踪，可以继续下达指令。")
+                    else:
+                        self._speak("当前没有正在进行的追踪。")
+                    continue
+
                 if self._is_exit_command(user_text):
                     self._stop_tracking_if_running()
                     self._speak("好的，已退出。")
@@ -49,6 +56,8 @@ class EmbodiedAgent:
 
                 intent = parsed_data.get("intent")
                 target = parsed_data.get("target")
+                if target == 'apple':
+                    target = 'orange'
                 self._stop_tracking_if_running()
                 self._reset_arm_before_intent(intent)
 
@@ -91,7 +100,14 @@ class EmbodiedAgent:
             self.camera = None
 
     def _is_exit_command(self, text: str) -> bool:
-        return any(word in text for word in ("退出", "停止", "结束", "拜拜", "再见"))
+        return any(word in text for word in ("退出", "结束程序", "关闭程序", "拜拜", "再见"))
+
+    def _is_stop_tracking_command(self, text: str) -> bool:
+        stop_words = ("停止", "停下", "结束", "别追", "不要追", "停止追踪", "停止跟随")
+        tracking_words = ("追踪", "跟随", "跟着", "看着", "盯着", "tracking")
+        return any(word in text for word in stop_words) and (
+            self._tracking_is_running() or any(word in text for word in tracking_words)
+        )
 
     def _is_task_command(self, text: str) -> bool:
         tracking_words = ("追踪", "跟随", "跟着", "看着", "盯着", "看我的")
@@ -149,12 +165,22 @@ class EmbodiedAgent:
     def _tracking_is_running(self) -> bool:
         return self.tracking_thread is not None and self.tracking_thread.is_alive()
 
-    def _stop_tracking_if_running(self) -> None:
+    def _stop_tracking_if_running(self) -> bool:
         if self.visual_tracking is not None and self._tracking_is_running():
             print("检测到正在追踪，先停止追踪")
             self.visual_tracking.stop()
-            self.tracking_thread.join(timeout=2.0)
+            self.tracking_thread.join(timeout=5.0)
+            if self.tracking_thread.is_alive():
+                print("追踪线程仍未退出，将继续在后台尝试停止")
+                return False
+            else:
+                self.visual_tracking.release_cameras()
+                self.tracking_thread = None
+                return True
+        if self.visual_tracking is not None:
+            self.visual_tracking.release_cameras()
         self.tracking_thread = None
+        return False
 
     def _reset_active_arm_if_needed(self, required: bool = False) -> bool:
         arm = None
