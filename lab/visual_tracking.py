@@ -1,4 +1,5 @@
 from tkinter import Frame
+from pathlib import Path
 import cv2
 import numpy as np
 import time
@@ -6,8 +7,13 @@ from ultralytics import YOLO
 from arm_control import ServoController
 from Angle_config import ArmManager
 
+BASE_DIR = Path(__file__).resolve().parent
+
+
 class VisualTracking:
-    def __init__(self, model_path: str = "yolo11s.pt", camera_id: int = 0, base_camera_id: int = 1) -> None:
+    def __init__(self, model_path: str | None = None, camera_id: int = 0, base_camera_id: int = 1) -> None:
+        if model_path is None:
+            model_path = str(BASE_DIR / "yolo11s.pt")
         self.cap = cv2.VideoCapture(camera_id)
         self.base_cap = cv2.VideoCapture(base_camera_id)
         self.model = YOLO(model_path)

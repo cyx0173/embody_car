@@ -2,6 +2,9 @@ from asr import QwenASR as ASR
 from nlu import NLU
 from tts import TTS as TTS
 
+import cv2
+import numpy as np
+
 
 class EmbodiedAgent:
     def __init__(self):
@@ -11,6 +14,8 @@ class EmbodiedAgent:
         self.visual_tracking = None
         self.visual_qa = None
         self.robotic_interaction = None
+        self.camera = None
+        self.camera_id = 0
 
     def run(self):
         print("具身智能助手已启动，请下达指令...")
@@ -34,12 +39,11 @@ class EmbodiedAgent:
                 intent = parsed_data.get("intent")
                 target = parsed_data.get("target")
 
-                current_image = self._capture_image()
-
                 if intent == "visual_tracking":
-                    reply = self._handle_tracking(target, current_image)
+                    reply = self._handle_tracking(target, None)
                     self._speak(reply)
                 elif intent == "visual_understanding":
+                    current_image = self._capture_image()
                     reply = self._handle_vqa(user_text, current_image)
                     if reply:
                         self._speak(reply)
@@ -56,7 +60,17 @@ class EmbodiedAgent:
                 self._speak("执行过程中遇到问题，请检查目标、相机或机械臂状态。")
 
     def _capture_image(self):
-        return None
+        if self.camera is None:
+            self.camera = cv2.VideoCapture(self.camera_id)
+        if not self.camera.isOpened():
+            raise RuntimeError(f"视觉相机打开失败: camera_id={self.camera_id}")
+
+        ret, frame = self.camera.read()
+        if not ret or frame is None:
+            raise RuntimeError("视觉相机读取失败")
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return rgb.astype(np.float32) / 255.0
 
     def _is_exit_command(self, text: str) -> bool:
         return any(word in text for word in ("退出", "停止", "结束", "拜拜", "再见"))

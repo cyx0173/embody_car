@@ -20,6 +20,7 @@ class ServoController:
     REG_POS_READ = 56
 
     ALL_IDS = [1, 2, 3, 4, 5, 6]
+    WHEEL_IDS = [7, 8, 9, 10]
     HOME_POS = {1: 2185, 2: 863, 3: 3107, 4: 1245, 5: 312}
 
     def __init__(self, port="/dev/cu.usbmodem5AE60562991", baudrate=1_000_000):
@@ -113,8 +114,8 @@ class ServoController:
         self.spin(servo_id, 0, acc=255)
 
     def spin_wheel(self, speed = 100, acc=50):
-        for i in(7,10):
-            self.spin(i,speed)
+        for i in (7, 10):
+            self.spin(i, speed, acc=acc)
     
     def move_wheel(self, mode, speed, acc=50):
         speed = int(speed)
@@ -141,6 +142,11 @@ class ServoController:
             self.spin(7, 0, acc=255)
         else:
             raise ValueError(f"不支持的 mode: {mode}")
+
+    def brake_wheels(self):
+        self.move_wheel(4, 0, acc=255)
+        for sid in self.WHEEL_IDS:
+            self.brake(sid)
 
     def brake_all(self):
         for sid in self.ALL_IDS:

@@ -1,5 +1,6 @@
 import re
 import shutil
+from pathlib import Path
 
 import numpy as np
 
@@ -16,11 +17,16 @@ else:
     TTS_IMPORT_ERROR = None
 
 
+BASE_DIR = Path(__file__).resolve().parent
+
+
 class TTS:
-    def __init__(self, model_path="./Qwen3-TTS-0.6B-CustomVoice"):
+    def __init__(self, model_path: str | None = None):
         self.model = None
         self.sampling_rate = 24000
         self.enabled = False
+        if model_path is None:
+            model_path = str(BASE_DIR / "Qwen3-TTS-0.6B-CustomVoice")
 
         if TTS_IMPORT_ERROR is not None:
             print(f"[TTS] 语音合成依赖不可用，改为只打印文本: {TTS_IMPORT_ERROR}")

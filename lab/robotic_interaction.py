@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from ultralytics import YOLO
-from Angle_config  import ArmManager
 from interaction.so101 import RobotIKSolver
 import numpy as np
 from arm_control import ServoController
@@ -10,9 +9,12 @@ import cv2
 import time
 import os
 import sys
+from pathlib import Path
 from solve_ik import solve_ik
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+BASE_DIR = Path(__file__).resolve().parent
 
 
 CAMERA_NATIVE_WIDTH = 1920
@@ -30,20 +32,23 @@ HAND_CAMERA_ROTATE_CODE = None
 # if the arm consistently reaches too high/low for detected targets.
 BASE_CAMERA_ORIGIN_IN_ARM_M = np.array([0.0, 0.0, 0.2], dtype=np.float64)
 
-BASE_SEARCH_AXIS_ID = 1
 BASE_SEARCH_DEADZONE_PX = 120
 BASE_SEARCH_STABLE_FRAMES = 1
 BASE_SEARCH_TIMEOUT_S = 90.0
 BASE_SEARCH_INTERVAL_S = 0.1
-BASE_SCAN_SPEED = 80
+BASE_WHEEL_SEARCH_SPEED = 80
+BASE_WHEEL_ALIGN_MIN_SPEED = 10
+BASE_WHEEL_ALIGN_MAX_SPEED = 35
+BASE_WHEEL_ALIGN_KP = 0.08
+BASE_WHEEL_TURN_RIGHT_MODE = 1
+BASE_WHEEL_TURN_LEFT_MODE = 0
+BASE_WHEEL_STOP_MODE = 4
 BASE_ALIGN_REVERSE_MARGIN_PX = 35
 BASE_ALIGN_LOST_RESET_FRAMES = 8
 BASE_ALIGN_REVERSE_MIN_CONF = 0.6
-BASE_ALIGN_MIN_SPEED = 6
-BASE_ALIGN_MAX_SPEED = 18
-BASE_ALIGN_KP = 0.06
-# Positive axis-1 speed made the base target drift away during real-machine tests.
-BASE_ALIGN_DIRECTION_SIGN = -1
+# Positive wheel speed uses BASE_WHEEL_TURN_RIGHT_MODE. Flip this if the target
+# moves farther from center during real-machine alignment.
+BASE_ALIGN_DIRECTION_SIGN = 1
 
 SAFE_READY_TICKS = {
     1: 2222,
@@ -89,14 +94,17 @@ class RoboticInteraction:
 
     def __init__(
         self,
-        xacro_path: str = "interaction/so101_follower.urdf.xacro",
+        xacro_path: str | None = None,
         camera_id: int = 1,
         base_camera_id: int = 0,
-        model_path: str = "yolo11s.pt",
+        model_path: str | None = None,
     ):
+        if xacro_path is None:
+            xacro_path = str(BASE_DIR / "interaction" / "so101_follower.urdf.xacro")
+        if model_path is None:
+            model_path = str(BASE_DIR / "yolo11s.pt")
         self.robot = RobotIKSolver(xacro_path)
         self.arm = ServoController()
-        self.arm_manager = ArmManager()
         self.cap = cv2.VideoCapture(camera_id)
         self.base_cap = cv2.VideoCapture(base_camera_id)
         self._configure_camera(self.cap, "手部相机")
@@ -105,7 +113,7 @@ class RoboticInteraction:
         self.model = YOLO(model_path)
         self.scan_state = "RIGHT"
         self.state = "LOCATE"
-        self.scan_speed = BASE_SCAN_SPEED
+        self.scan_speed = BASE_WHEEL_SEARCH_SPEED
         self.base_align_direction_sign = BASE_ALIGN_DIRECTION_SIGN
         self.last_base_align_abs_error: float | None = None
         self.last_base_align_speed: int | None = None
@@ -237,7 +245,7 @@ class RoboticInteraction:
         )
 
     def interact(self, target: str):
-        extrinsics = "calib/stereo_extrinsics.json"
+        extrinsics = str(BASE_DIR / "calib" / "stereo_extrinsics.json")
         self.target_world_xyz = self.double_cap_locate(target, extrinsics)
         print(self.target_world_xyz)
         self.move_to_world_xyz(self.target_world_xyz)
@@ -423,32 +431,35 @@ class RoboticInteraction:
             rotate_code=BASE_YOLO_ROTATE_CODE,
         )
 
-    def _spin_base_search_axis(self, speed: int) -> None:
-        is_safe, danger = self.arm_manager.safe_detect(BASE_SEARCH_AXIS_ID, self.arm)
-        if speed > 0 and danger == "right":
-            print("底部相机到达右侧软限位，切换向左搜索")
-            self.arm.brake(BASE_SEARCH_AXIS_ID)
-            speed = -abs(speed)
-            self.scan_state = "LEFT"
-        elif speed < 0 and danger == "left":
-            print("底部相机到达左侧软限位，切换向右搜索")
-            self.arm.brake(BASE_SEARCH_AXIS_ID)
-            speed = abs(speed)
-            self.scan_state = "RIGHT"
-        self.arm.spin(BASE_SEARCH_AXIS_ID, speed)
+    def _spin_base_by_wheels(self, speed: int) -> None:
+        """Rotate the chassis so the fixed base camera sweeps the scene."""
+        speed = int(speed)
+        if speed == 0:
+            self._stop_base_wheels()
+            return
+
+        mode = BASE_WHEEL_TURN_RIGHT_MODE if speed > 0 else BASE_WHEEL_TURN_LEFT_MODE
+        self.scan_state = "RIGHT" if speed > 0 else "LEFT"
+        self.arm.move_wheel(mode, abs(speed))
+
+    def _stop_base_wheels(self) -> None:
+        if hasattr(self.arm, "brake_wheels"):
+            self.arm.brake_wheels()
+        else:
+            self.arm.move_wheel(BASE_WHEEL_STOP_MODE, 0, acc=255)
 
     def _scan_with_base_camera(self) -> None:
         if self.scan_state == "RIGHT":
-            self._spin_base_search_axis(abs(self.scan_speed))
+            self._spin_base_by_wheels(abs(self.scan_speed))
         else:
-            self._spin_base_search_axis(-abs(self.scan_speed))
+            self._spin_base_by_wheels(-abs(self.scan_speed))
 
     def _align_base_camera_to_target(self, base_uv: tuple[float, float]) -> bool:
         image_center_x = CAMERA_WORKING_WIDTH / 2.0
         error_x = float(base_uv[0]) - image_center_x
         abs_error_x = abs(error_x)
         if abs(error_x) <= BASE_SEARCH_DEADZONE_PX:
-            self.arm.brake(BASE_SEARCH_AXIS_ID)
+            self._stop_base_wheels()
             self.last_base_align_abs_error = None
             self.last_base_align_speed = None
             self.base_align_lost_frames = 0
@@ -470,8 +481,8 @@ class RoboticInteraction:
 
         direction = self.base_align_direction_sign if error_x > 0 else -self.base_align_direction_sign
         align_speed = min(
-            BASE_ALIGN_MAX_SPEED,
-            max(BASE_ALIGN_MIN_SPEED, int(abs_error_x * BASE_ALIGN_KP)),
+            BASE_WHEEL_ALIGN_MAX_SPEED,
+            max(BASE_WHEEL_ALIGN_MIN_SPEED, int(abs_error_x * BASE_WHEEL_ALIGN_KP)),
         )
         speed = int(direction * align_speed)
         self.scan_state = "RIGHT" if speed > 0 else "LEFT"
@@ -482,47 +493,39 @@ class RoboticInteraction:
         self.last_base_align_abs_error = abs_error_x
         self.last_base_align_speed = speed
         self.base_align_lost_frames = 0
-        self._spin_base_search_axis(speed)
+        self._spin_base_by_wheels(speed)
         return False
 
     def locate_point(self, target: str) -> tuple[float, float]:
-        """Find and roughly center the target using only the base camera rotation."""
+        """Find and roughly center the target by rotating the chassis wheels."""
         self.state = "LOCATE"
 
         stable_frames = 0
-
+        deadline = time.monotonic() + BASE_SEARCH_TIMEOUT_S
         try:
             while self.state == "LOCATE":
-                base_uv = self._detect_base_target(target)
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"底部相机没有在 {BASE_SEARCH_TIMEOUT_S:.1f}s 内找到目标: {target}")
 
-                # 1. 没检测到目标：扫视寻找，不能继续进入 align
+                base_uv = self._detect_base_target(target)
                 if base_uv is None:
                     print("底部相机初始没有检测到目标，开始扫视寻找...")
                     stable_frames = 0
-
                     if self.last_base_align_speed is not None:
                         self.base_align_lost_frames += 1
-
-                        # 短时间丢失：沿用原来的扫视动作继续找
                         if self.base_align_lost_frames < BASE_ALIGN_LOST_RESET_FRAMES:
-                            self.arm.spin_wheel(BASE_SCAN_SPEED)
+                            self._spin_base_by_wheels(self.last_base_align_speed)
+                            time.sleep(BASE_SEARCH_INTERVAL_S)
                             continue
-
-                        # 长时间丢失：清空上一次对准速度
                         self.last_base_align_speed = None
                         self.base_align_lost_frames = 0
 
-                    # 没有历史对准方向时，默认扫视
-                    self.arm.spin_wheel(BASE_SCAN_SPEED)
+                    self._scan_with_base_camera()
+                    time.sleep(BASE_SEARCH_INTERVAL_S)
                     continue
 
-                # 2. 检测到目标：清空丢失计数
-                self.base_align_lost_frames = 0
-
-                # 3. 对准目标
                 if self._align_base_camera_to_target(base_uv):
                     stable_frames += 1
-
                     if stable_frames >= BASE_SEARCH_STABLE_FRAMES:
                         self.state = "TRACK"
                         print("底部相机稳定找到目标，准备进行双目定位")
@@ -530,8 +533,9 @@ class RoboticInteraction:
                 else:
                     stable_frames = 0
 
+                time.sleep(BASE_SEARCH_INTERVAL_S)
         finally:
-            self.arm.brake(BASE_SEARCH_AXIS_ID)
+            self._stop_base_wheels()
 
         raise RuntimeError(f"底部相机没有找到目标: {target}")
 

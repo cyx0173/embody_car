@@ -2,6 +2,7 @@ import os
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 import json
 import sys
+from pathlib import Path
 from typing import Any
 import torch
 from model.SCTPCommandParser import (
@@ -17,8 +18,9 @@ from model.SCTPCommandParser import (
     get_device,
 )
 
-MODEL_PATH = "model/my_local_model"
-CHECKPOINT = "model/nlu.pt"
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_PATH = str(BASE_DIR / "model" / "my_local_model")
+CHECKPOINT = str(BASE_DIR / "model" / "nlu.pt")
 MAX_LEN = 128
 
 
