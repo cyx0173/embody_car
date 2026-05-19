@@ -12,13 +12,15 @@ from visual_tracking import VisualTracking
 from visual_qa import VisualQA
 from robotic_interaction import RoboticInteraction
 from chat import ChatBot
+from arm_control import ServoController
 
 
 class EmbodiedAgent:
     def __init__(self):
         self.camera = CameraManager()
-        self.visual_tracking = VisualTracking(camera=self.camera)
-        self.robotic_interaction = RoboticInteraction(camera=self.camera)
+        self.arm = ServoController()
+        self.visual_tracking = VisualTracking(camera=self.camera, arm=self.arm)
+        self.robotic_interaction = RoboticInteraction(camera=self.camera, arm=self.arm)
         self.asr = ASR()
         self.nlu = NLU().init()
         self.tts = TTS()
@@ -35,6 +37,30 @@ class EmbodiedAgent:
                     continue
 
                 print(f"用户: {user_text}")
+                if self._is_stop_tracking_command(user_text):
+                    if self._stop_tracking_if_running():
+                        self._speak("好的，我已停止追踪，可以继续下达指令。")
+                    else:
+                        self._speak("当前没有正在进行的追踪。")
+                    continue
+
+                if self._is_exit_command(user_text):
+                    self._stop_tracking_if_running()
+                    self._speak("好的，已退出。")
+                    break
+
+                if self._is_reset_command(user_text):
+                    self._stop_tracking_if_running()
+                    self.arm.reset()
+                    self._speak("好的，已重置机械臂。")
+                    continue
+
+                if not self._is_task_command(user_text):
+                    self._stop_tracking_if_running()
+                    reply = self._handle_chat(user_text)
+                    self._speak(reply)
+                    continue
+
                 parsed = self.nlu.predict(user_text)
                 print(f"NLU: {parsed}")
 
@@ -62,7 +88,7 @@ class EmbodiedAgent:
                     reply = self._handle_chat(user_text)
                     self._speak(reply)
                 elif intent == "reset_arm":
-                    self.robotic_interaction.arm.reset()
+                    self.arm.reset()
                     self._speak("好的，已重置机械臂。")
                 else:
                     self._speak("未能识别有效意图，请重新下达指令。")
@@ -82,6 +108,57 @@ class EmbodiedAgent:
         if parsed.get("error") == "missing_target":
             return "我还不知道要操作哪个目标，请说清楚目标物体。"
         return "指令解析不完整，请重新说一遍。"
+
+    def _is_exit_command(self, text: str) -> bool:
+        return any(word in text for word in ("退出", "结束程序", "关闭程序", "拜拜", "再见"))
+
+    def _is_stop_tracking_command(self, text: str) -> bool:
+        stop_words = ("停止", "停下", "结束", "别追", "不要追", "停止追踪", "停止跟随")
+        tracking_words = ("追踪", "跟随", "跟着", "看着", "盯着", "tracking")
+        return any(word in text for word in stop_words) and (
+            self._tracking_is_running() or any(word in text for word in tracking_words)
+        )
+
+    def _is_reset_command(self, text: str) -> bool:
+        return any(word in text for word in ("复位", "重置", "reset", "回到初始", "回到原位"))
+
+    def _is_task_command(self, text: str) -> bool:
+        tracking_words = ("追踪", "跟随", "跟着", "看着", "盯着", "看我的")
+        interaction_words = ("抓", "拿", "碰", "触碰", "点", "按", "推", "移动到", "靠近")
+        visual_words = (
+            "画面",
+            "图片",
+            "图里",
+            "镜头",
+            "相机",
+            "看到",
+            "看见",
+            "前面",
+            "这里",
+            "那边",
+            "我正在",
+            "电脑上",
+            "屏幕",
+            "做什么",
+        )
+        target_words = (
+            "人",
+            "瓶子",
+            "杯子",
+            "电脑",
+            "屏幕",
+            "手机",
+            "键盘",
+            "鼠标",
+            "椅子",
+            "书",
+        )
+
+        if any(word in text for word in tracking_words + interaction_words + visual_words):
+            return True
+        return any(action in text for action in ("找", "寻找")) and any(
+            target in text for target in target_words
+        )
 
     def _speak(self, text: str) -> None:
         print(f"助手: {text}")
@@ -106,11 +183,11 @@ class EmbodiedAgent:
 
     def prepare_for_intent(self, intent: str | None) -> None:
         if intent == "object_interaction":
-            self.robotic_interaction.arm.reset()
+            self.arm.reset()
         elif intent == "visual_tracking":
-            pass
+            self.arm.reset()
         elif intent == "reset_arm":
-            self.robotic_interaction.arm.reset()
+            self.arm.reset()
 
     def _handle_tracking(self, target: str | None, _current_image) -> str | None:
         if not target:

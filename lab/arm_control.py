@@ -27,7 +27,7 @@ class ServoController:
     def __init__(self, port="/dev/cu.usbmodem5AE60562991", baudrate=1_000_000):
         try:
             self._ser = serial.Serial(port, baudrate, timeout=0.01)
-            self._states = {sid: {'mode': None, 'speed': None} for sid in self.ALL_IDS}
+            self._states = {sid: {'mode': None, 'speed': None} for sid in self.ALL_IDS + self.WHEEL_IDS}
         except Exception as e:
             print(f"无法打开串口: {e}")
             raise

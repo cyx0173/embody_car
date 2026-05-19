@@ -89,13 +89,14 @@ class VisualTracking:
     def __init__(
         self,
         camera: CameraManager,
+        arm: ServoController | None = None,
         model_path: str | None = None,
     ) -> None:
         if model_path is None:
             model_path = str(BASE_DIR / "yolo11s.pt")
         self.camera = camera
         self.model = YOLO(model_path)
-        self.arm = DryRunServoController() if TRACK_DRY_RUN else ServoController()
+        self.arm = DryRunServoController() if TRACK_DRY_RUN else (arm or ServoController())
 
         frame = self._capture()
         self.center_x = frame.shape[1] // 2
@@ -136,6 +137,8 @@ class VisualTracking:
             while self.running:
                 base_img = self._capture_base()
                 base_uv = self.detect_object(base_img, target_class)
+                if not self.running:
+                    break
                 if SHOW_TRACKING_WINDOW:
                     cv2.circle(
                         base_img,
@@ -151,11 +154,15 @@ class VisualTracking:
  
                 if base_uv is None:
                     stable_base_frames = 0
+                    if not self.running:
+                        break
                     self._search_move()
                     time.sleep(BASE_SEARCH_INTERVAL_S)
                     continue
 
                 if BASE_COARSE_ALIGN_ENABLED:
+                    if not self.running:
+                        break
                     if self._align_base_camera(base_uv):
                         stable_base_frames += 1
                         if stable_base_frames >= BASE_ALIGN_STABLE_FRAMES:
@@ -166,6 +173,8 @@ class VisualTracking:
                     else:
                         stable_base_frames = 0
                 else:
+                    if not self.running:
+                        break
                     self.scan_state = "RIGHT"
                     self.arm.brake(SEARCH_AXIS_ID)
                     self._handle_tracking(target_class)
@@ -379,6 +388,10 @@ class VisualTracking:
 if __name__ == "__main__":
     os.environ.setdefault("TRACK_SHOW_WINDOW", "1")
     SHOW_TRACKING_WINDOW = os.getenv("TRACK_SHOW_WINDOW", "0") == "1"
-    tracker = VisualTracking()
+    camera = CameraManager()
+    tracker = VisualTracking(camera=camera)
     time.sleep(2)
-    tracker.track(target_class="bottle")
+    try:
+        tracker.track(target_class="bottle")
+    finally:
+        camera.release()

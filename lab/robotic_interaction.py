@@ -121,6 +121,7 @@ class RoboticInteraction:
     def __init__(
         self,
         camera: CameraManager,
+        arm: ServoController | None = None,
         xacro_path: str | None = None,
         model_path: str | None = None,
     ):
@@ -130,7 +131,7 @@ class RoboticInteraction:
             model_path = str(BASE_DIR / "yolo11s.pt")
         self.camera = camera
         self.robot = RobotIKSolver(xacro_path)
-        self.arm = ServoController()
+        self.arm = arm or ServoController()
         self.model = YOLO(model_path)
         self.scan_state = "RIGHT"
         self.state = "LOCATE"
@@ -732,11 +733,12 @@ class RoboticInteraction:
             return
 
         self.scan_state = "RIGHT" if speed > 0 else "LEFT"
-        self.arm.spin_wheel(speed)
+        mode = BASE_WHEEL_TURN_RIGHT_MODE if speed > 0 else BASE_WHEEL_TURN_LEFT_MODE
+        self.arm.move_wheel(mode, abs(speed))
 
 
     def _stop_base_wheels(self) -> None:
-        self.arm.spin_wheel(0, acc=255)
+        self.arm.move_wheel(BASE_WHEEL_STOP_MODE, 0, acc=255)
 
     def _scan_with_base_camera(self) -> None:
         if self.scan_state == "RIGHT":
@@ -861,5 +863,9 @@ class RoboticInteraction:
 
 
 if __name__ == "__main__":
-    robot = RoboticInteraction()
-    robot.interact("orange")
+    camera = CameraManager()
+    robot = RoboticInteraction(camera=camera)
+    try:
+        robot.interact("orange")
+    finally:
+        camera.release()
