@@ -2,7 +2,7 @@ from turtle import pos
 import serial
 import time
 from Angle_config import SERVO_CALIBRATION, JOINT_ID_MAP
-
+import math
 def _resolve_zero_position(joint_config: dict) -> int:
     lower = int(joint_config["range_min"])
     upper = int(joint_config["range_max"])
@@ -101,6 +101,36 @@ class ServoController:
         self._send_write(servo_id, self.REG_WRITE_V, [acc, 0, 0, 0, 0, spd_lo, spd_hi])
         self._states[servo_id]['speed'] = speed
 
+    def spin_wheel(self, speed = 100, acc=50):
+        for i in(7,10):
+            self.spin(i,speed)
+    
+    def move_wheel(self, mode, speed, acc=50):
+        speed = int(speed)
+        half_speed = int(round(speed * 0.5))
+        if mode == 0:
+            self.spin(8, -speed, acc=acc)
+            self.spin(9,  speed, acc=acc)
+            self.spin(7,  0,     acc=acc)
+        elif mode == 1:
+            self.spin(8,  speed, acc=acc)
+            self.spin(9, -speed, acc=acc)
+            self.spin(7,  0,     acc=acc)
+        elif mode == 2:
+            self.spin(8,  half_speed, acc=acc)
+            self.spin(9,  half_speed, acc=acc)
+            self.spin(7, -speed,      acc=acc)
+        elif mode == 3:
+            self.spin(8, -half_speed, acc=acc)
+            self.spin(9, -half_speed, acc=acc)
+            self.spin(7,  speed,      acc=acc)
+        elif mode == 4:
+            self.spin(8, 0, acc=255)
+            self.spin(9, 0, acc=255)
+            self.spin(7, 0, acc=255)
+        else:
+            raise ValueError(f"不支持的 mode: {mode}")
+
     def move_to(self, servo_id, pos, speed=4000, acc=50):
         self.set_mode(servo_id, 0)
         pos = max(0, min(4095, int(pos)))
@@ -111,6 +141,7 @@ class ServoController:
 
     def brake(self, servo_id):
         self.spin(servo_id, 0, acc=255)
+        self.set_mode(servo_id, 0)
 
     def brake_all(self):
         for sid in self.ALL_IDS:
@@ -141,7 +172,15 @@ class ServoController:
     
 if __name__ == "__main__":
     arm = ServoController()
-    arm.reset()
+    #arm.spin(7, 200)
+    #arm.spin(8,200)
+    #arm.spin(9,200)
+    #arm.brake(7)
+    #arm.brake(8)
+    arm.move_wheel(1,100)
+    arm.move_wheel(4,0)
+    #arm.brake(9)
+
 
 
 '''

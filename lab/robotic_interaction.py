@@ -360,19 +360,10 @@ class RoboticInteraction:
             base_img = self._preprocess_for_calib(base_img_raw)
             base_uv = self.detect_object(base_img, target)
             if base_uv is None:
-                is_safe, danger = self.arm_manager.safe_detect(1, self.arm)
-                if self.scan_state == "RIGHT":
-                    self.arm.spin(1, self.scan_speed)
-                    if danger == "right":
-                        self.arm.brake(1)
-                        self.scan_state = "LEFT"
-                elif self.scan_state == "LEFT":
-                    self.arm.spin(1, -self.scan_speed)
-                    if danger == "left":
-                        self.arm.brake(1)
-                        self.scan_state = "RIGHT"
+                self.arm.spin_wheel(100)
             else:
                 self.state = "TRACK"
+                self.arm.spin_wheel(0)
                 break
             time.sleep(0.1)
 

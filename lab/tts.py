@@ -1,3 +1,5 @@
+import os
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 import torch
 import sounddevice as sd
 import numpy as np
@@ -8,15 +10,15 @@ from qwen_tts import Qwen3TTSModel
 class TTS:
     def __init__(self, model_path="./Qwen3-TTS-0.6B-CustomVoice"):
         self.device = "mps" if torch.backends.mps.is_available() else "cpu"
-        sd.default.device = 2
+        #sd.default.device = 2
 
         self.model = Qwen3TTSModel.from_pretrained(
             model_path,
             device_map=self.device,
             dtype=torch.bfloat16,
         )
+        print(self.device)
         self.sampling_rate = 24000
-        print("Jarvis TTS ready")
 
     def _split_text(self, text):
         sentences = re.split(r'([。！？.!?;；])', text)
@@ -43,4 +45,19 @@ class TTS:
 
 if __name__ == "__main__":
     tts = TTS()
-    tts.speak("你好，tts正常")
+    while True:
+        try:
+            user_input = input("请输入文本: ").strip()
+            if user_input.lower() in ['q', 'quit', 'exit']:
+                print("退出程序。")
+                break
+                
+            if not user_input:
+                continue
+                
+            tts.speak(user_input)
+            
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            print(f"发生错误: {e}")
