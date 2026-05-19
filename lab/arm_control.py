@@ -20,15 +20,16 @@ class ServoController:
     REG_POS_READ = 56
 
     ALL_IDS = [1, 2, 3, 4, 5, 6]
-    HOME_POS = {1: 2185, 2: 863, 3: 3107, 4: 1245, 5: 312}
+    WHEEL_IDS = [7, 8, 9, 10]
+    HOME_POS = {1: 2000, 2: 863, 3: 3107, 4: 1245, 5: 312}
+    RESET_ORDER_GROUPS = ((3, 4), (2,), (1, 5))
 
     def __init__(self, port="/dev/cu.usbmodem5AE60562991", baudrate=1_000_000):
         try:
             self._ser = serial.Serial(port, baudrate, timeout=0.01)
             self._states = {sid: {'mode': None, 'speed': None} for sid in self.ALL_IDS}
-            print(f"✅ 串口已连接: {port}")
         except Exception as e:
-            print(f"❌ 无法打开串口: {e}")
+            print(f"无法打开串口: {e}")
             raise
         self.middle = {
             name: _resolve_zero_position(cfg) for name, cfg in SERVO_CALIBRATION.items()
@@ -143,15 +144,53 @@ class ServoController:
         self.spin(servo_id, 0, acc=255)
         self.set_mode(servo_id, 0)
 
+    def spin_wheel(self, speed = 100, acc=50):
+        for i in (7, 8, 9):
+            self.spin(i, speed, acc=acc)
+    
+    def move_wheel(self, mode, speed, acc=50):
+        speed = int(speed)
+        half_speed = int(round(speed * 0.5))
+        if mode == 0:
+            self.spin(8, -speed, acc=acc)
+            self.spin(9,  speed, acc=acc)
+            self.spin(7,  0,     acc=acc)
+        elif mode == 1:
+            self.spin(8,  speed, acc=acc)
+            self.spin(9, -speed, acc=acc)
+            self.spin(7,  0,     acc=acc)
+        elif mode == 2:
+            self.spin(8,  half_speed, acc=acc)
+            self.spin(9,  half_speed, acc=acc)
+            self.spin(7, -speed,      acc=acc)
+        elif mode == 3:
+            self.spin(8, -half_speed, acc=acc)
+            self.spin(9, -half_speed, acc=acc)
+            self.spin(7,  speed,      acc=acc)
+        elif mode == 4:
+            self.spin(8, 0, acc=255)
+            self.spin(9, 0, acc=255)
+            self.spin(7, 0, acc=255)
+        else:
+            raise ValueError(f"不支持的 mode: {mode}")
+
+    def brake_wheels(self):
+        self.move_wheel(4, 0, acc=255)
+        for sid in self.WHEEL_IDS:
+            self.brake(sid)
+
     def brake_all(self):
         for sid in self.ALL_IDS:
             self.brake(sid)
 
-    def reset(self, speed=1000):
-        print("🏠 正在全轴复位...")
-        for sid, pos in self.HOME_POS.items():
-            self.move_to(sid, pos, speed=speed)
-        time.sleep(2)
+    def reset(self, speed=1300, acc=55, stage_delay=0.9):
+        for group in self.RESET_ORDER_GROUPS:
+            for sid in group:
+                pos = self.HOME_POS.get(sid)
+                if pos is None:
+                    continue
+                self.move_to(sid, pos, speed=speed, acc=acc)
+            time.sleep(stage_delay)
     
     def get_position(self, servo_id):
         return self._send_read(servo_id, self.REG_POS_READ, 2)
@@ -162,7 +201,6 @@ class ServoController:
 
     def is_safe(self, servo_id, margin=20):
         raw = self.get_position(servo_id)
-        print(raw)
         for cfg in self._data.values():
             if cfg["id"] == servo_id:
                 lo = cfg["range_min"]

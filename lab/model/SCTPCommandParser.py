@@ -18,6 +18,8 @@ INTENTS = [
     "visual_tracking",
     "object_interaction",
     "visual_understanding",
+    "reset_arm",
+    "voice_chat",
 ]
 
 INTENT_TO_ID = {name: i for i, name in enumerate(INTENTS)}
@@ -150,7 +152,7 @@ class CommandDataset(Dataset):
         if target not in TARGET_TO_ID:
             raise ValueError(f"Item {idx} unknown target: {target}")
 
-        if intent in ("visual_tracking", "object_interaction") and target == "none":
+        if intent in ("visual_tracking", "object_interaction", "reset_arm", "voice_chat") and target == "none":
             raise ValueError(
                 f"Item {idx} invalid: {intent} requires target != none. text={text}"
             )

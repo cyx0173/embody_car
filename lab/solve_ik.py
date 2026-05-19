@@ -2,25 +2,23 @@ from __future__ import annotations
 import numpy as np
 import math
 from collections.abc import Sequence
-from Angle_config import angles_to_ticks 
+from Angle_config import MY_CONFIG, angles_to_ticks 
 
 # 单位: meter / radian
-BASE_HEIGHT_M = 0.095
+BASE_HEIGHT_M = 0.075
 UPPER_ARM_M = 0.11257
 FOREARM_M = 0.13490
-# 腕关节到末端参考点的长度。没实测前保持 0，函数会退化成肩肘两连杆求解。
-TOOL_OFFSET_M = 0.1
+# 腕关节到抓取参考点的等效长度。这里用实机手动对准样本校准到夹爪前方参考点。
+TOOL_OFFSET_M = 0.16
 ANGLE_SEARCH_STEP_RAD = math.radians(1.0)
 
-TICKS_PER_REV = 4096
-SERVO_CALIBRATION = {
-    "shoulder_pan": {"id": 1, "drive_mode": 0, "homing_offset": 1788, "range_min": 715, "range_max": 3466},
-    "shoulder_lift": {"id": 2, "drive_mode": 0, "homing_offset": -1706, "range_min": 822, "range_max": 3226},
-    "elbow_flex": {"id": 3, "drive_mode": 0, "homing_offset": 1712, "range_min": 908, "range_max": 3123},
-    "wrist_flex": {"id": 4, "drive_mode": 0, "homing_offset": 1345, "range_min": 845, "range_max": 3176},
-    "wrist_roll": {"id": 5, "drive_mode": 0, "homing_offset": 1900, "range_min": 0, "range_max": 4095},
-    "gripper": {"id": 6, "drive_mode": 0, "homing_offset": 1313, "range_min": 1507, "range_max": 3026},
-}
+# 这组偏好来自手动扳到目标 [0.2554, 0.015968, 0.22571] 时读取的 tick:
+# 1:2048, 2:2483, 3:1247, 4:3173, 5:317。
+PREFERRED_SHOULDER_LIFT_RAD = math.radians(54.5)
+PREFERRED_ELBOW_FLEX_RAD = math.radians(16.7)
+PREFERRED_WRIST_FLEX_RAD = math.radians(98.8)
+PREFERRED_WRIST_ROLL_RAD = math.radians(-148.1)
+
 JOINT_LIMITS_RAD: dict[str, tuple[float, float]] = {}
 
 
@@ -38,11 +36,12 @@ def position_to_arm(position_xyz: Sequence[float], tool_offset_m: float = TOOL_O
     Raises:
         ValueError: if the target is outside the simplified arm workspace.
     """
+    position_xyz = np.asarray(position_xyz, dtype=float).reshape(-1)
     if len(position_xyz) != 3:
         raise ValueError("position_xyz must be a 3D coordinate: (x, y, z)")
 
     x, y, z = [float(v) for v in position_xyz]
-    shoulder_pan = math.atan2(y, x)
+    shoulder_pan = -math.atan2(y, x)
 
     radial = math.hypot(x, y)
     height = z - BASE_HEIGHT_M
@@ -71,7 +70,7 @@ def position_to_arm(position_xyz: Sequence[float], tool_offset_m: float = TOOL_O
             "shoulder_lift": shoulder_lift,
             "elbow_flex": elbow_flex,
             "wrist_flex": wrist_flex,
-            "wrist_roll": 0.0,
+            "wrist_roll": PREFERRED_WRIST_ROLL_RAD,
         }
     )
     return joints
@@ -105,7 +104,6 @@ def _solve_three_link_with_priority(
     height: float,
     tool_offset_m: float,
 ) -> tuple[float, float, float]:
-    preferred_shoulder = math.atan2(height, radial)
     shoulder_lo, shoulder_hi = JOINT_LIMITS_RAD["shoulder_lift"]
     best_solution: tuple[float, float, float] | None = None
     best_score: tuple[float, float, float] | None = None
@@ -116,15 +114,16 @@ def _solve_three_link_with_priority(
         if shoulder_lift > shoulder_hi:
             shoulder_lift = shoulder_hi
 
-        elbow_origin_r = UPPER_ARM_M * math.cos(shoulder_lift)
-        elbow_origin_z = UPPER_ARM_M * math.sin(shoulder_lift)
+        upper_abs_angle = shoulder_lift
+        elbow_origin_r = UPPER_ARM_M * math.cos(upper_abs_angle)
+        elbow_origin_z = UPPER_ARM_M * math.sin(upper_abs_angle)
         remain_r = radial - elbow_origin_r
         remain_z = height - elbow_origin_z
 
         for elbow_flex, wrist_flex in _solve_remaining_two_link(
             remain_r,
             remain_z,
-            shoulder_lift,
+            upper_abs_angle,
             tool_offset_m,
         ):
             if not _angle_in_limit("elbow_flex", elbow_flex):
@@ -134,9 +133,9 @@ def _solve_three_link_with_priority(
 
             # Priority: shoulder first, then elbow, then wrist.
             score = (
-                abs(shoulder_lift - preferred_shoulder),
-                abs(elbow_flex),
-                abs(wrist_flex),
+                abs(shoulder_lift - PREFERRED_SHOULDER_LIFT_RAD),
+                abs(elbow_flex - PREFERRED_ELBOW_FLEX_RAD),
+                abs(wrist_flex - PREFERRED_WRIST_FLEX_RAD),
             )
             if best_score is None or score < best_score:
                 best_score = score
@@ -150,7 +149,7 @@ def _solve_three_link_with_priority(
 def _solve_remaining_two_link(
     remain_r: float,
     remain_z: float,
-    shoulder_lift: float,
+    upper_abs_angle: float,
     tool_offset_m: float,
 ) -> list[tuple[float, float]]:
     distance = math.hypot(remain_r, remain_z)
@@ -167,11 +166,13 @@ def _solve_remaining_two_link(
 
     solutions = []
     target_angle = math.atan2(remain_z, remain_r)
-    for wrist_flex in (wrist_abs, -wrist_abs):
-        elbow_flex = target_angle - shoulder_lift - math.atan2(
-            tool_offset_m * math.sin(wrist_flex),
-            FOREARM_M + tool_offset_m * math.cos(wrist_flex),
+    for tool_relative_angle in (wrist_abs, -wrist_abs):
+        forearm_abs_angle = target_angle - math.atan2(
+            tool_offset_m * math.sin(tool_relative_angle),
+            FOREARM_M + tool_offset_m * math.cos(tool_relative_angle),
         )
+        elbow_flex = forearm_abs_angle - upper_abs_angle
+        wrist_flex = -tool_relative_angle
         solutions.append((elbow_flex, wrist_flex))
     return solutions
 
@@ -187,33 +188,33 @@ def _min_reach(*lengths: float) -> float:
     return max(0.0, longest - others)
 
 
-def _calibration_range_rad(config: dict[str, int]) -> tuple[float, float]:
-    lo = _raw_to_rad(config["range_min"], config)
-    hi = _raw_to_rad(config["range_max"], config)
-    return min(lo, hi), max(lo, hi)
+def _config_tick_to_rad(config: dict[str, int], tick: int) -> float:
+    if config["label"] == 0:
+        ref_low, ref_mid, ref_high = 0.0, 90.0, 180.0
+    elif config["label"] == 1:
+        ref_low, ref_mid, ref_high = -90.0, 0.0, 90.0
+    else:
+        raise ValueError(f"unsupported joint label: {config['label']}")
+
+    p_low, p_mid, p_high = config["a_low"], config["a_mid"], config["a_high"]
+    if (p_low <= tick <= p_mid) or (p_mid <= tick <= p_low):
+        pct = (tick - p_low) / (p_mid - p_low)
+        deg = ref_low + (ref_mid - ref_low) * pct
+    else:
+        pct = (tick - p_mid) / (p_high - p_mid)
+        deg = ref_mid + (ref_high - ref_mid) * pct
+    return math.radians(deg)
 
 
-def _raw_to_rad(raw: int, config: dict[str, int]) -> float:
-    ticks = int(raw) - _resolve_zero_raw(config)
-    if config["drive_mode"]:
-        ticks = -ticks
-    return ticks / TICKS_PER_REV * 2.0 * math.pi
-
-
-def _resolve_zero_raw(config: dict[str, int]) -> int:
-    lower = int(config["range_min"])
-    upper = int(config["range_max"])
-    offset = int(config["homing_offset"])
-    candidates = (offset, offset % TICKS_PER_REV, 2048 + offset, 2048 - offset)
-    for candidate in candidates:
-        if lower <= int(candidate) <= upper:
-            return int(candidate)
-    return int((lower + upper) / 2)
+def _config_range_rad(config: dict[str, int]) -> tuple[float, float]:
+    range_a = _config_tick_to_rad(config, config["range_min"])
+    range_b = _config_tick_to_rad(config, config["range_max"])
+    return min(range_a, range_b), max(range_a, range_b)
 
 
 JOINT_LIMITS_RAD = {
-    name: _calibration_range_rad(config)
-    for name, config in SERVO_CALIBRATION.items()
+    name: _config_range_rad(config)
+    for name, config in MY_CONFIG.items()
     if name != "gripper"
 }
 
@@ -226,8 +227,8 @@ def forward_kinematics_check(joints: dict[str, float], target_xyz: tuple[float, 
 
     # 1. 计算各个连杆在二维平面 (R, Z) 的绝对朝向角
     abs_angle_upper = lift
-    abs_angle_forearm = lift + elbow
-    abs_angle_tool = lift + elbow + wrist
+    abs_angle_forearm = abs_angle_upper + elbow
+    abs_angle_tool = abs_angle_forearm - wrist
 
     # 2. 从基座逐步叠加计算末端在平面上的 R 和 Z
     # 原点 Z 需要加上基座高度
@@ -245,7 +246,7 @@ def forward_kinematics_check(joints: dict[str, float], target_xyz: tuple[float, 
 
     # 3. 将平面的 R 转换回三维空间的 X 和 Y
     x_end = r_end * math.cos(pan)
-    y_end = r_end * math.sin(pan)
+    y_end = -r_end * math.sin(pan)
 
     # 4. 计算误差
     tx, ty, tz = target_xyz

@@ -3,23 +3,39 @@
 使用阿里云DashScope的Gummy语音识别
 """
 
-import pyaudio
-import dashscope
 import time
-from dashscope.audio.asr import *
+
+try:
+    import pyaudio
+    import dashscope
+    from dashscope.audio.asr import TranslationRecognizerCallback, TranslationRecognizerChat
+except ImportError as exc:
+    pyaudio = None
+    dashscope = None
+    TranslationRecognizerCallback = None
+    TranslationRecognizerChat = None
+    ASR_IMPORT_ERROR = exc
+else:
+    ASR_IMPORT_ERROR = None
 
 QWEN_API_KEY = "sk-029be25ee95448a18ac98cbc2d89b12d"
 
 class QwenASR:
     def __init__(self):
-        dashscope.api_key = QWEN_API_KEY
+        self.text_fallback = ASR_IMPORT_ERROR is not None
+        if dashscope is not None:
+            dashscope.api_key = QWEN_API_KEY
+        else:
+            print(f"[ASR] 语音依赖不可用，改用命令行输入: {ASR_IMPORT_ERROR}")
         self.mic = None
         self.stream = None
         self.final_text = ""
-        self.input_device_index = 0  # 新增：自动查找USB麦克风
+        self.input_device_index = None if self.text_fallback else self._find_usb_mic_index()
 
     def _find_usb_mic_index(self):
         """自动查找包含 'USB' 或 'Camera' 的音频输入设备索引"""
+        if pyaudio is None:
+            return None
         p = pyaudio.PyAudio()
         target_idx = None
         for i in range(p.get_device_count()):
@@ -38,6 +54,9 @@ class QwenASR:
 
     def listen(self, voice_status=None):
         """阻塞式监听，返回转写的最终文字"""
+        if self.text_fallback:
+            return input("请输入指令> ").strip()
+
         self.final_text = ""
         if voice_status is None:
             voice_status = {}
@@ -95,17 +114,21 @@ class QwenASR:
         return self.final_text
 
     def _on_open(self):
+        if pyaudio is None:
+            return
         self.mic = pyaudio.PyAudio()
         # 关键修改：添加 frames_per_buffer 并指定设备索引
         try:
-            self.stream = self.mic.open(
-                format=pyaudio.paInt16,
-                channels=1,
-                rate=16000,
-                input=True,
-                frames_per_buffer=1024,          # 显式设置缓冲区大小，避免ALSA错误
-                input_device_index=self.input_device_index  # 强制使用USB麦克风
-            )
+            stream_kwargs = {
+                "format": pyaudio.paInt16,
+                "channels": 1,
+                "rate": 16000,
+                "input": True,
+                "frames_per_buffer": 1024,
+            }
+            if self.input_device_index is not None:
+                stream_kwargs["input_device_index"] = self.input_device_index
+            self.stream = self.mic.open(**stream_kwargs)
         except Exception as e:
             print(f"[ASR] 打开音频流失败: {e}")
             # 降级尝试：不指定设备索引，让系统选择默认设备
