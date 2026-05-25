@@ -21,8 +21,8 @@ class ServoController:
 
     ALL_IDS = [1, 2, 3, 4, 5, 6]
     WHEEL_IDS = [7, 8, 9, 10]
-    HOME_POS = {1: 2000, 2: 863, 3: 3107, 4: 1245, 5: 312}
-    RESET_ORDER_GROUPS = ((3, 4), (2,), (1, 5))
+    HOME_POS = {1: 2101, 2: 862, 3: 3104, 4: 1573, 5: 1702, 6: 1838}
+    RESET_ORDER_GROUPS = ((3, 4), (2,), (1, 5, 6))
 
     def __init__(self, port="/dev/cu.usbmodem5AE60562991", baudrate=1_000_000):
         try:

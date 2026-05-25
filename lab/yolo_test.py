@@ -12,7 +12,7 @@ if not cap0.isOpened():
 if not cap1.isOpened():
     raise RuntimeError("无法打开摄像头 1")
 
-rotate_code_cap1 = cv2.ROTATE_90_COUNTERCLOCKWISE
+rotate_code_cap1 = cv2.ROTATE_90_CLOCKWISE
 
 while True:
     ret0, frame0 = cap0.read()
