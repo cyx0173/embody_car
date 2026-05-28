@@ -21,7 +21,7 @@ class ServoController:
 
     ALL_IDS = [1, 2, 3, 4, 5, 6]
     WHEEL_IDS = [7, 8, 9, 10]
-    HOME_POS = {1: 2101, 2: 862, 3: 3104, 4: 1573, 5: 1702, 6: 1838}
+    HOME_POS = {1: 2048, 2: 863, 3: 2962, 4: 2675, 5: 1029, 6: 800}
     RESET_ORDER_GROUPS = ((3, 4), (2,), (1, 5, 6))
 
     def __init__(self, port="/dev/cu.usbmodem5AE60562991", baudrate=1_000_000):
@@ -43,7 +43,7 @@ class ServoController:
             "elbow_flex":     {"id": 3, "drive_mode": 0, "homing_offset": 1061,  "range_min": 908,  "range_max": 3123},
             "wrist_flex":     {"id": 4, "drive_mode": 0, "homing_offset": 2049,  "range_min": 845,  "range_max": 3176},
             "wrist_roll":     {"id": 5, "drive_mode": 0, "homing_offset": 1900,  "range_min": 0,    "range_max": 4095},
-            "gripper":        {"id": 6, "drive_mode": 0, "homing_offset": 1313,  "range_min": 1507, "range_max": 3026},
+            "gripper":        {"id": 6, "drive_mode": 0, "homing_offset": 1313,  "range_min": 800, "range_max": 2302},
         }
 
 
@@ -215,10 +215,10 @@ if __name__ == "__main__":
     #arm.spin(9,200)
     #arm.brake(7)
     #arm.brake(8)
-    arm.move_wheel(1,100)
-    arm.move_wheel(4,0)
+    # arm.move_wheel(1,100)
+    # arm.move_wheel(4,0)
     #arm.brake(9)
-
+    arm.reset()
 
 
 '''

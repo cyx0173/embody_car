@@ -6,6 +6,9 @@ venv/
 .env
 *.log
 .DS_Store
+.cache/
+datasets/
+outputs/
 FunASR-main/
 landmark_demo_v2/
 *.mp4

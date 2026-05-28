@@ -8,7 +8,7 @@ MY_CONFIG = {
     # Label 0 (0, 90, 180): angle_low=0, angle_mid=90, angle_high=180
     "shoulder_lift": {"id": 2, "range_min": 822,  "range_max": 3226, "a_low": 3114, "a_mid": 2072, "a_high": 1051, "label": 0},
     "elbow_flex":    {"id": 3, "range_min": 908,  "range_max": 3123, "a_low": 1061, "a_mid": 2061, "a_high": 3114, "label": 0},
-    "gripper":       {"id": 6, "range_min": 1507, "range_max": 3026, "a_low": 1507, "a_mid": 2266, "a_high": 3026, "label": 0},
+    "gripper":       {"id": 6, "range_min": 800, "range_max": 2302, "a_low": 800, "a_mid": 1507, "a_high": 2302, "label": 0},
 }
 def angles_to_ticks(joints_rad: dict[str, float]) -> dict[int, int]:
     commands = {}
@@ -36,7 +36,7 @@ SERVO_CALIBRATION = {
     "elbow_flex":    {"id": 3, "drive_mode": 0, "homing_offset": 1061,  "range_min": 908,  "range_max": 3123},
     "wrist_flex":    {"id": 4, "drive_mode": 0, "homing_offset": 2049,  "range_min": 845,  "range_max": 3176},
     "wrist_roll":    {"id": 5, "drive_mode": 0, "homing_offset": 1900,  "range_min": 0,    "range_max": 4095},
-    "gripper":       {"id": 6, "drive_mode": 0, "homing_offset": 1313,  "range_min": 1507, "range_max": 3026},
+    "gripper":       {"id": 6, "drive_mode": 0, "homing_offset": 1313,  "range_min": 800, "range_max": 2302},
 }
 JOINT_ID_MAP = {
     'shoulder_pan': 1,
@@ -64,7 +64,7 @@ class ArmManager:
             3: AxisConfig(left=2601, center=4061, right=733,min=908,max=3123,angel_0=1289,angel_180=3098),
             4: AxisConfig(left=2194, center=4046, right=444,min=845,max=3176,angel_0=1904,angel_180=3098),
             5: AxisConfig(left=1961, center=4093, right=1756,min=0,max=4095,angel_0=1062,angel_180=3098),
-            6: AxisConfig(left=2710, center=3210, right=1500,min=1507,max=3026,angel_0=1062,angel_180=3098),
+            6: AxisConfig(left=2710, center=3210, right=1500,min=800,max=2302,angel_0=1062,angel_180=3098),
         }
 
     def safe_detect(self, axis_id, arm, margin=20):

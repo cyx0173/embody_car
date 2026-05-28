@@ -115,6 +115,8 @@ TARGET_POSITION_TOLERANCE_TICKS = 80
 SAFE_FOLD_TIMEOUT_S = 8.0
 TARGET_AXIS_TIMEOUT_S = 15.0
 SAFE_READY_SETTLE_S = 4.0
+RESET_BEFORE_COORDINATE_MEASURE = True
+COORDINATE_RESET_SETTLE_S = 0.8
 
 class RoboticInteraction:
 
@@ -834,6 +836,11 @@ class RoboticInteraction:
         return point_arm.reshape(3)
 
     def double_cap_locate(self, target: str, extrinsics_path: str) -> np.ndarray:
+        if RESET_BEFORE_COORDINATE_MEASURE:
+            print("Resetting arm to HOME_POS before coordinate measurement...")
+            self.arm.reset()
+            time.sleep(COORDINATE_RESET_SETTLE_S)
+
         self.locate_point(target)
         with open(extrinsics_path, "r") as f:
             ext = json.load(f)

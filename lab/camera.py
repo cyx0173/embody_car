@@ -7,9 +7,9 @@ CAMERA_NATIVE_WIDTH = 1920
 CAMERA_NATIVE_HEIGHT = 1080
 CAMERA_WORKING_SIZE = min(CAMERA_NATIVE_WIDTH, CAMERA_NATIVE_HEIGHT) // 2  # 540
 
-HAND_YOLO_ROTATE_CODE = cv2.ROTATE_90_COUNTERCLOCKWISE
+HAND_YOLO_ROTATE_CODE = None
 BASE_YOLO_ROTATE_CODE = None
-HAND_CAMERA_ROTATE_CODE = cv2.ROTATE_90_COUNTERCLOCKWISE
+HAND_CAMERA_ROTATE_CODE = cv2.ROTATE_180
 
 
 def center_crop_resize(frame: np.ndarray) -> np.ndarray:
@@ -26,7 +26,7 @@ def center_crop_resize(frame: np.ndarray) -> np.ndarray:
 class CameraManager:
     def __init__(
         self,
-        hand_id: int = 1,
+        hand_id: int = 3,
         base_id: int = 0,
         *,
         rotate_hand: bool = True,

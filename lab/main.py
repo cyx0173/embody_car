@@ -106,7 +106,7 @@ class EmbodiedAgent:
 
     def prepare_for_intent(self, intent: str | None) -> None:
         if intent == "object_interaction":
-            self.robotic_interaction.arm.reset()
+            pass
         elif intent == "visual_tracking":
             pass
         elif intent == "reset_arm":
