@@ -18,16 +18,23 @@ class ServoController:
     REG_MODE = 33
     REG_WRITE_V = 41
     REG_POS_READ = 56
+    READ_SETTLE_S = 0.005
 
     ALL_IDS = [1, 2, 3, 4, 5, 6]
     WHEEL_IDS = [7, 8, 9, 10]
     HOME_POS = {1: 2048, 2: 863, 3: 2962, 4: 2675, 5: 1029, 6: 800}
     RESET_ORDER_GROUPS = ((3, 4), (2,), (1, 5, 6))
 
-    def __init__(self, port="/dev/cu.usbmodem5AE60562991", baudrate=1_000_000):
+    def __init__(
+        self,
+        port="/dev/cu.usbmodem5AE60562991",
+        baudrate=1_000_000,
+        read_settle_s=READ_SETTLE_S,
+    ):
         try:
             self._ser = serial.Serial(port, baudrate, timeout=0.01)
             self._states = {sid: {'mode': None, 'speed': None} for sid in self.ALL_IDS}
+            self._read_settle_s = float(read_settle_s)
         except Exception as e:
             print(f"无法打开串口: {e}")
             raise
@@ -75,7 +82,7 @@ class ServoController:
         packet = [0xFF, 0xFF] + payload + [self._checksum(payload)]
         self._ser.write(bytes(packet))
 
-        time.sleep(0.015)
+        time.sleep(self._read_settle_s)
         response = self._ser.read(read_len + 6)
         if (len(response) >= read_len + 6
                 and response[0] == 0xFF

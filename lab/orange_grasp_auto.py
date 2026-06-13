@@ -100,13 +100,30 @@ def run_wrist_ready_navigation(args: argparse.Namespace) -> TargetDetection:
         f"x={args.wrist_target_offset_x:+.0f}px, "
         f"y={args.wrist_target_offset_y:+.0f}px"
     )
+    if getattr(args, "wrist_target", None) and args.wrist_target != args.target:
+        print(f"Navigation target split: base={args.target}, wrist={args.wrist_target}")
     print(
         "Wrist-ready deadzone: "
         f"x={args.wrist_ready_deadzone_x:.0f}px, "
         f"y={args.wrist_ready_deadzone_y:.0f}px, "
+        f"mode={args.wrist_ready_position_mode}, "
+        f"ctrl={args.wrist_visual_servo_mode}, "
         f"overlap>={args.wrist_ready_min_overlap:.2f}, "
         f"area>={args.wrist_min_box_area:.3f}"
     )
+    if getattr(args, "wrist_min_box_visible_ratio", 0.0) > 0:
+        print(
+            "Wrist safe view: "
+            f"visible>={args.wrist_min_box_visible_ratio:.2f}, "
+            f"margin={args.wrist_visible_margin_px:.0f}px, "
+            f"max_area={args.wrist_max_box_area:.3f}"
+        )
+    if getattr(args, "wrist_preferred_box_area", 0.0) > 0:
+        print(
+            "Wrist preferred approach: "
+            f"area>={args.wrist_preferred_box_area:.3f}, "
+            f"timeout={args.wrist_preferred_timeout_s:.1f}s"
+        )
     if not args.execute:
         print("DRY RUN: wheels and follower arm will not move. Add --execute to move hardware.")
     print(
@@ -136,14 +153,25 @@ def run_wrist_ready_navigation(args: argparse.Namespace) -> TargetDetection:
         wrist_ready_center_x_deadzone_px=args.wrist_ready_deadzone_x,
         wrist_ready_center_y_deadzone_px=args.wrist_ready_deadzone_y,
         wrist_ready_min_box_overlap_ratio=args.wrist_ready_min_overlap,
+        wrist_ready_position_mode=args.wrist_ready_position_mode,
+        wrist_preferred_box_area_ratio=args.wrist_preferred_box_area,
+        wrist_preferred_timeout_s=args.wrist_preferred_timeout_s,
+        wrist_min_box_visible_ratio=args.wrist_min_box_visible_ratio,
+        wrist_visible_margin_px=args.wrist_visible_margin_px,
+        wrist_max_box_area_ratio=args.wrist_max_box_area,
         wrist_min_conf=args.wrist_min_conf,
         wrist_min_box_area_ratio=args.wrist_min_box_area,
+        wrist_visual_servo_mode=args.wrist_visual_servo_mode,
         wheel_search_speed=args.wheel_search_speed,
         wrist_align_max_speed=args.wrist_align_max_speed,
         wrist_align_min_speed=args.wrist_align_min_speed,
     )
     try:
-        detection = pipeline.approach_until_wrist_ready(args.target)
+        detection = pipeline.approach_until_wrist_ready(
+            args.target,
+            wrist_target=getattr(args, "wrist_target", None),
+            reset_arm=getattr(args, "nav_reset_arm", True),
+        )
         print(
             "Wrist target ready: "
             f"uv={detection.uv}, conf={detection.conf:.2f}, "
@@ -178,13 +206,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="Full orange grasp: wheel visual servo to wrist-ready pose, then ACT grasp."
     )
     parser.add_argument("--target", default=DEFAULT_TARGET)
+    parser.add_argument(
+        "--wrist-target",
+        default=None,
+        help="Optional YOLO class to use for wrist-camera ready detection. Defaults to --target.",
+    )
     parser.add_argument("--model", default=str(BASE_DIR / "yolo11s.pt"))
     parser.add_argument("--policy-path", type=Path, default=DEFAULT_POLICY_PATH)
     parser.add_argument("--timeout", type=float, default=BASE_SEARCH_TIMEOUT_S)
     parser.add_argument("--show", action="store_true")
     parser.add_argument("--execute", action="store_true", help="Actually move wheels and follower arm.")
-    parser.add_argument("--hand-camera-id", type=int, default=1)
-    parser.add_argument("--base-camera-id", type=int, default=0)
+    parser.add_argument("--hand-camera-id", type=int, default=2)
+    parser.add_argument("--base-camera-id", type=int, default=1)
     parser.add_argument("--follower-port", default=DEFAULT_FOLLOWER_PORT)
     parser.add_argument("--approach-speed", type=int, default=ORANGE_APPROACH_SPEED)
     parser.add_argument("--wheel-search-speed", type=int, default=ORANGE_WHEEL_SEARCH_SPEED)
@@ -193,14 +226,50 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nav-frame-mode", choices=("crop", "letterbox"), default=FRAME_MODE_LETTERBOX)
     parser.add_argument("--nav-frame-width", type=int, default=NAV_FRAME_WIDTH)
     parser.add_argument("--nav-frame-height", type=int, default=NAV_FRAME_HEIGHT)
+    parser.add_argument(
+        "--no-nav-reset-arm",
+        dest="nav_reset_arm",
+        action="store_false",
+        help="Do not reset the arm before visual navigation.",
+    )
 
     parser.add_argument("--wrist-target-offset-x", type=float, default=WRIST_TARGET_OFFSET_X_PX)
     parser.add_argument("--wrist-target-offset-y", type=float, default=WRIST_TARGET_OFFSET_Y_PX)
     parser.add_argument("--wrist-ready-deadzone-x", type=float, default=70.0)
     parser.add_argument("--wrist-ready-deadzone-y", type=float, default=70.0)
     parser.add_argument("--wrist-ready-min-overlap", type=float, default=ORANGE_WRIST_READY_MIN_BOX_OVERLAP_RATIO)
+    parser.add_argument(
+        "--wrist-ready-position-mode",
+        choices=("center_or_overlap", "center", "overlap"),
+        default="center_or_overlap",
+    )
+    parser.add_argument(
+        "--wrist-preferred-box-area",
+        type=float,
+        default=0.0,
+        help="Optional soft target area. If normal ready is reached below this area, keep approaching until this area or timeout.",
+    )
+    parser.add_argument("--wrist-preferred-timeout-s", type=float, default=0.0)
+    parser.add_argument(
+        "--wrist-min-box-visible-ratio",
+        type=float,
+        default=0.0,
+        help="Require this fraction of the wrist detection bbox to be inside the safe view box. 0 disables it.",
+    )
+    parser.add_argument("--wrist-visible-margin-px", type=float, default=0.0)
+    parser.add_argument(
+        "--wrist-max-box-area",
+        type=float,
+        default=0.0,
+        help="If >0, back up when the wrist bbox area ratio is larger than this.",
+    )
     parser.add_argument("--wrist-min-conf", type=float, default=WRIST_MIN_CONF)
     parser.add_argument("--wrist-min-box-area", type=float, default=ORANGE_WRIST_MIN_BOX_AREA_RATIO)
+    parser.add_argument(
+        "--wrist-visual-servo-mode",
+        choices=("sequential", "proportional"),
+        default="sequential",
+    )
 
     parser.add_argument("--policy-duration-s", type=float, default=ORANGE_POLICY_DURATION_S)
     parser.add_argument("--policy-fps", type=float, default=ORANGE_POLICY_FPS)
@@ -211,7 +280,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pre-close-hold-s", type=float, default=ORANGE_PRE_CLOSE_HOLD_S)
     parser.add_argument("--final-close-pos", type=int, default=ORANGE_FINAL_CLOSE_POS)
     parser.add_argument("--return-after-close", action="store_true")
-    parser.set_defaults(policy_reset_before=True)
+    parser.set_defaults(policy_reset_before=True, nav_reset_arm=True)
     return parser
 
 

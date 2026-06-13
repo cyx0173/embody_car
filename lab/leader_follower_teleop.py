@@ -22,7 +22,7 @@ from orange_grasp_config import (
     READ_RETRY_DELAY_S,
     SERVO_IDS,
     SERVO_TICKS_PER_TURN,
-    clamp,
+    clamp_follower_target,
     normalize_servo_reading,
     parse_ids,
 )
@@ -48,6 +48,7 @@ class LeaderFollowerTeleop:
         spike_confirm_frames: int,
         target_max_step: int,
         gripper_target_max_step: int,
+        loop_interval_s: float,
     ) -> None:
         self.leader = ServoController(port=leader_port)
         self.follower = None if dry_run else ServoController(port=follower_port)
@@ -65,6 +66,7 @@ class LeaderFollowerTeleop:
         self.spike_confirm_frames = max(1, int(spike_confirm_frames))
         self.target_max_step = int(target_max_step)
         self.gripper_target_max_step = int(gripper_target_max_step)
+        self.loop_interval_s = max(0.0, float(loop_interval_s))
         self.last_sent: dict[int, int] = {}
         self.last_leader: dict[int, int] = {}
         self.pending_leader: dict[int, tuple[int, int]] = {}
@@ -75,7 +77,7 @@ class LeaderFollowerTeleop:
             while True:
                 commands = self._read_leader_positions()
                 self._send_follower_positions(commands)
-                time.sleep(LOOP_INTERVAL_S)
+                time.sleep(self.loop_interval_s)
         except KeyboardInterrupt:
             print("\nStopped.")
         finally:
@@ -151,8 +153,7 @@ class LeaderFollowerTeleop:
         else:
             target = self._map_leader_to_follower(servo_id, int(pos))
 
-        cfg = JOINT_MAP[servo_id]
-        return clamp(target, cfg["follower_min"], cfg["follower_max"])
+        return clamp_follower_target(servo_id, target)
 
     def _map_leader_to_follower(self, servo_id: int, leader_pos: int) -> int:
         if servo_id == 6:
@@ -169,17 +170,16 @@ class LeaderFollowerTeleop:
             return follower_min
 
         if cfg.get("wrap"):
-            return self._map_wrapped_leader_to_follower(
+            ratio = self._wrapped_ratio(
                 leader_pos=leader_pos,
                 leader_min=leader_min,
                 leader_max=leader_max,
-                follower_min=follower_min,
-                follower_max=follower_max,
             )
+            return self._map_ratio_to_follower(servo_id, ratio)
 
         ratio = (leader_pos - leader_min) / (leader_max - leader_min)
         ratio = max(0.0, min(1.0, ratio))
-        return int(round(follower_min + ratio * (follower_max - follower_min)))
+        return self._map_ratio_to_follower(servo_id, ratio)
 
     def _accept_leader_position(self, servo_id: int, pos: int) -> bool:
         last = self.last_leader.get(servo_id)
@@ -248,11 +248,6 @@ class LeaderFollowerTeleop:
         return normalize_servo_reading(pos)
 
     def _map_gripper(self, leader_pos: int) -> int:
-        if self.gripper_mode == "binary":
-            if self._is_gripper_closer_to_close(leader_pos):
-                return GRIPPER_FOLLOWER_CLOSE
-            return GRIPPER_FOLLOWER_OPEN
-
         leader_span = GRIPPER_LEADER_CLOSE - GRIPPER_LEADER_OPEN
         follower_span = GRIPPER_FOLLOWER_CLOSE - GRIPPER_FOLLOWER_OPEN
         if leader_span == 0:
@@ -272,27 +267,34 @@ class LeaderFollowerTeleop:
         delta = abs((int(a) - int(b)) % SERVO_TICKS_PER_TURN)
         return min(delta, SERVO_TICKS_PER_TURN - delta)
 
-    def _map_wrapped_leader_to_follower(
+    def _map_ratio_to_follower(self, servo_id: int, ratio: float) -> int:
+        cfg = JOINT_MAP[servo_id]
+        follower_min = int(cfg["follower_min"])
+        follower_max = int(cfg["follower_max"])
+        ratio = max(0.0, min(1.0, float(ratio)))
+        if cfg.get("follower_wrap"):
+            span = (follower_max - follower_min) % SERVO_TICKS_PER_TURN
+            return int(round((follower_min + ratio * span) % SERVO_TICKS_PER_TURN))
+        return int(round(follower_min + ratio * (follower_max - follower_min)))
+
+    def _wrapped_ratio(
         self,
         *,
         leader_pos: int,
         leader_min: int,
         leader_max: int,
-        follower_min: int,
-        follower_max: int,
-    ) -> int:
+    ) -> float:
         span = (leader_max - leader_min) % SERVO_TICKS_PER_TURN
         delta = (leader_pos - leader_min) % SERVO_TICKS_PER_TURN
 
         if span == 0:
-            return follower_min
+            return 0.0
         if delta > span:
             distance_to_min = min(delta, SERVO_TICKS_PER_TURN - delta)
             distance_to_max = min(delta - span, SERVO_TICKS_PER_TURN - (delta - span))
             delta = 0 if distance_to_min <= distance_to_max else span
 
-        ratio = delta / span
-        return int(round(follower_min + ratio * (follower_max - follower_min)))
+        return delta / span
 
     def _read_position_with_retries(self, arm: ServoController, servo_id: int) -> int:
         for _ in range(READ_RETRIES):
@@ -314,12 +316,12 @@ class LeaderFollowerTeleop:
         if servo_id != 6:
             return f"servo {servo_id}: leader={leader_pos} -> follower={target}{suffix}"
 
-        distance_to_open = self._circular_distance(leader_pos, GRIPPER_LEADER_OPEN)
-        distance_to_close = self._circular_distance(leader_pos, GRIPPER_LEADER_CLOSE)
-        state = "close" if distance_to_close < distance_to_open else "open"
+        leader_span = GRIPPER_LEADER_CLOSE - GRIPPER_LEADER_OPEN
+        ratio = 0.0 if leader_span == 0 else (leader_pos - GRIPPER_LEADER_OPEN) / leader_span
+        ratio = max(0.0, min(1.0, ratio))
         return (
             f"servo 6: leader={leader_pos} -> follower={target} "
-            f"state={state} d_open={distance_to_open} d_close={distance_to_close}{suffix}"
+            f"linear_ratio={ratio:.2f}{suffix}"
         )
 
 
@@ -332,6 +334,12 @@ def main() -> None:
     parser.add_argument("--speed", type=int, default=1800)
     parser.add_argument("--acc", type=int, default=45)
     parser.add_argument("--min-delta", type=int, default=MIN_DELTA_TICKS)
+    parser.add_argument(
+        "--loop-interval",
+        type=float,
+        default=LOOP_INTERVAL_S,
+        help="Sleep between leader-follower control loops in seconds.",
+    )
     parser.add_argument(
         "--servo-ids",
         default=",".join(str(sid) for sid in SERVO_IDS),
@@ -351,7 +359,7 @@ def main() -> None:
         "--gripper-mode",
         choices=("binary", "linear"),
         default="linear",
-        help="Use binary open/close mapping or continuous linear mapping for servo 6.",
+        help="Compatibility option; servo 6 always uses continuous linear mapping.",
     )
     parser.add_argument(
         "--gripper-threshold",
@@ -416,6 +424,7 @@ def main() -> None:
         spike_confirm_frames=args.spike_confirm_frames,
         target_max_step=args.target_max_step,
         gripper_target_max_step=args.gripper_target_max_step,
+        loop_interval_s=args.loop_interval,
     )
     if args.print_positions:
         teleop.print_positions_loop()

@@ -37,6 +37,7 @@ from orange_grasp_config import (
     RESET_BEFORE_POS,
     RESET_ORDER_GROUPS,
     clamp,
+    clamp_follower_target,
     normalize_servo_reading,
     positions_to_array,
     sanitize_follower_positions,
@@ -113,11 +114,7 @@ def clamp_action(action: np.ndarray) -> np.ndarray:
     clamped = action.copy()
     for idx, servo_id in enumerate(range(1, 7)):
         cfg = JOINT_MAP[servo_id]
-        clamped[idx] = clamp(
-            int(round(clamped[idx])),
-            int(cfg["follower_min"]),
-            int(cfg["follower_max"]),
-        )
+        clamped[idx] = clamp_follower_target(servo_id, int(round(clamped[idx])))
     return clamped.astype(np.int32)
 
 
@@ -345,10 +342,9 @@ def main() -> None:
             )
             if pre_close_requested:
                 pre_close_action = action.copy()
-                pre_close_action[3] = clamp(
+                pre_close_action[3] = clamp_follower_target(
+                    4,
                     int(pre_close_action[3]) + args.pre_close_servo4_offset,
-                    JOINT_MAP[4]["follower_min"],
-                    JOINT_MAP[4]["follower_max"],
                 )
                 pre_close_action[5] = int(last_sent.get(6, state[5]))
                 pre_close_action = clamp_action(pre_close_action)

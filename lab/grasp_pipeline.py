@@ -49,6 +49,7 @@ WRIST_ALIGN_DEADZONE_PX = 45
 WRIST_ALIGN_MIN_SPEED = 8
 WRIST_ALIGN_MAX_SPEED = 80
 WRIST_ALIGN_KP = 0.12
+WRIST_Y_ALIGN_KP = 0.35
 WRIST_ALIGN_DIRECTION_SIGN = BASE_ALIGN_DIRECTION_SIGN
 WRIST_SEEN_FORWARD_SPEED_RATIO = 0.7
 WRIST_Y_ADJUST_SPEED_RATIO = 0.5
@@ -59,6 +60,8 @@ WRIST_READY_MIN_BOX_OVERLAP_RATIO = 0.30
 YOLO_CONF_THRESHOLD = 0.25
 FRAME_MODE_CROP = "crop"
 FRAME_MODE_LETTERBOX = "letterbox"
+WRIST_SERVO_MODE_SEQUENTIAL = "sequential"
+WRIST_SERVO_MODE_PROPORTIONAL = "proportional"
 NAV_FRAME_WIDTH = 640
 NAV_FRAME_HEIGHT = 480
 
@@ -138,8 +141,15 @@ class GraspPipeline:
         wrist_ready_center_x_deadzone_px: float = WRIST_READY_CENTER_X_DEADZONE_PX,
         wrist_ready_center_y_deadzone_px: float = WRIST_READY_CENTER_Y_DEADZONE_PX,
         wrist_ready_min_box_overlap_ratio: float = WRIST_READY_MIN_BOX_OVERLAP_RATIO,
+        wrist_ready_position_mode: str = "center_or_overlap",
+        wrist_preferred_box_area_ratio: float = 0.0,
+        wrist_preferred_timeout_s: float = 0.0,
+        wrist_min_box_visible_ratio: float = 0.0,
+        wrist_visible_margin_px: float = 0.0,
+        wrist_max_box_area_ratio: float = 0.0,
         wrist_min_conf: float = WRIST_MIN_CONF,
         wrist_min_box_area_ratio: float = WRIST_MIN_BOX_AREA_RATIO,
+        wrist_visual_servo_mode: str = WRIST_SERVO_MODE_SEQUENTIAL,
         wheel_search_speed: int = WHEEL_SEARCH_SPEED,
         wrist_align_max_speed: int = WRIST_ALIGN_MAX_SPEED,
         wrist_align_min_speed: int = WRIST_ALIGN_MIN_SPEED,
@@ -164,12 +174,24 @@ class GraspPipeline:
         self.wrist_ready_center_x_deadzone_px = float(wrist_ready_center_x_deadzone_px)
         self.wrist_ready_center_y_deadzone_px = float(wrist_ready_center_y_deadzone_px)
         self.wrist_ready_min_box_overlap_ratio = float(wrist_ready_min_box_overlap_ratio)
+        if wrist_ready_position_mode not in ("center_or_overlap", "center", "overlap"):
+            raise ValueError(f"Unsupported wrist_ready_position_mode: {wrist_ready_position_mode}")
+        self.wrist_ready_position_mode = wrist_ready_position_mode
+        self.wrist_preferred_box_area_ratio = float(wrist_preferred_box_area_ratio)
+        self.wrist_preferred_timeout_s = float(wrist_preferred_timeout_s)
+        self.wrist_min_box_visible_ratio = float(wrist_min_box_visible_ratio)
+        self.wrist_visible_margin_px = float(wrist_visible_margin_px)
+        self.wrist_max_box_area_ratio = float(wrist_max_box_area_ratio)
         self.wrist_min_conf = float(wrist_min_conf)
         self.wrist_min_box_area_ratio = float(wrist_min_box_area_ratio)
+        if wrist_visual_servo_mode not in (WRIST_SERVO_MODE_SEQUENTIAL, WRIST_SERVO_MODE_PROPORTIONAL):
+            raise ValueError(f"Unsupported wrist_visual_servo_mode: {wrist_visual_servo_mode}")
+        self.wrist_visual_servo_mode = wrist_visual_servo_mode
         self.wheel_search_speed = int(wheel_search_speed)
         self.wrist_align_max_speed = int(wrist_align_max_speed)
         self.wrist_align_min_speed = int(wrist_align_min_speed)
         self._last_chassis_command: tuple[int, int, int] | None = None
+        self._wrist_preferred_started_at: float | None = None
         self._init_chassis_wheels()
 
         base_frame = self._read_base_frame()
@@ -189,8 +211,16 @@ class GraspPipeline:
             f"area={detection.box_area_ratio:.3f}"
         )
 
-    def approach_until_wrist_ready(self, target: str) -> TargetDetection:
-        self.arm.reset()
+    def approach_until_wrist_ready(
+        self,
+        target: str,
+        *,
+        wrist_target: str | None = None,
+        reset_arm: bool = True,
+    ) -> TargetDetection:
+        wrist_target = wrist_target or target
+        if reset_arm:
+            self.arm.reset()
         no_target_deadline = time.monotonic() + self.timeout_s
         stable_frames = 0
         last_state = "init"
@@ -200,7 +230,8 @@ class GraspPipeline:
             while True:
                 if time.monotonic() >= no_target_deadline:
                     raise RuntimeError(
-                        f"连续 {self.timeout_s:.1f}s 没有在 base/wrist 看到目标: {target}"
+                        f"连续 {self.timeout_s:.1f}s 没有在 base/wrist 看到目标: "
+                        f"base={target}, wrist={wrist_target}"
                     )
 
                 base_frame = self._read_base_frame()
@@ -213,7 +244,7 @@ class GraspPipeline:
                 )
                 wrist_det = self._detect_target(
                     wrist_frame,
-                    target,
+                    wrist_target,
                     rotate_code=HAND_YOLO_ROTATE_CODE,
                     source="wrist",
                 )
@@ -300,22 +331,68 @@ class GraspPipeline:
         wrist_det: TargetDetection,
         stable_frames: int,
     ) -> tuple[str, int]:
-        clear_enough, centered_enough, overlap_enough, _ = self._wrist_ready_metrics(wrist_det)
+        (
+            clear_enough,
+            centered_enough,
+            overlap_enough,
+            _,
+            visible_enough,
+            not_too_large,
+        ) = self._wrist_ready_metrics(wrist_det)
+        position_ready = self._wrist_position_ready(centered_enough, overlap_enough)
 
-        if not clear_enough or not (centered_enough or overlap_enough):
+        if not not_too_large:
+            self._wrist_preferred_started_at = None
+            self._move_backward_for_wrist_fit()
+            return "wrist_too_close", 0
+
+        if clear_enough and position_ready and not visible_enough:
+            self._wrist_preferred_started_at = None
+            self._move_to_improve_wrist_visibility(wrist_det)
+            return "wrist_fit_view", 0
+
+        if not clear_enough or not position_ready:
+            self._wrist_preferred_started_at = None
             self._move_with_wrist_correction(wrist_det, clear_enough)
             return "wrist_visual_servo", 0
 
+        if self._should_keep_approaching_preferred_area(wrist_det):
+            self._move_with_wrist_correction(wrist_det, clear_enough, force_forward=True)
+            return "wrist_preferred_approach", 0
+
         self._stop_wheels()
+        self._wrist_preferred_started_at = None
         return "wrist_ready", stable_frames + 1
+
+    def _should_keep_approaching_preferred_area(self, detection: TargetDetection) -> bool:
+        if self.wrist_preferred_box_area_ratio <= 0:
+            return False
+        if detection.box_area_ratio >= self.wrist_preferred_box_area_ratio:
+            self._wrist_preferred_started_at = None
+            return False
+
+        now = time.monotonic()
+        if self._wrist_preferred_started_at is None:
+            self._wrist_preferred_started_at = now
+
+        if self.wrist_preferred_timeout_s > 0:
+            elapsed = now - self._wrist_preferred_started_at
+            if elapsed >= self.wrist_preferred_timeout_s:
+                return False
+
+        return True
 
     def _wrist_ready_metrics(
         self,
         detection: TargetDetection,
-    ) -> tuple[bool, bool, bool, float]:
+    ) -> tuple[bool, bool, bool, float, bool, bool]:
         clear_enough = (
             detection.conf >= self.wrist_min_conf
             and detection.box_area_ratio >= self.wrist_min_box_area_ratio
+        )
+        not_too_large = (
+            self.wrist_max_box_area_ratio <= 0
+            or detection.box_area_ratio <= self.wrist_max_box_area_ratio
         )
         centered_enough = (
             abs(detection.uv[0] - self.wrist_target_x) <= self.wrist_ready_center_x_deadzone_px
@@ -323,7 +400,16 @@ class GraspPipeline:
         )
         overlap_ratio = self._wrist_ready_overlap_ratio(detection)
         overlap_enough = overlap_ratio >= self.wrist_ready_min_box_overlap_ratio
-        return clear_enough, centered_enough, overlap_enough, overlap_ratio
+        visible_ratio = self._wrist_safe_visible_ratio(detection)
+        visible_enough = visible_ratio >= self.wrist_min_box_visible_ratio
+        return clear_enough, centered_enough, overlap_enough, overlap_ratio, visible_enough, not_too_large
+
+    def _wrist_position_ready(self, centered_enough: bool, overlap_enough: bool) -> bool:
+        if self.wrist_ready_position_mode == "center":
+            return centered_enough
+        if self.wrist_ready_position_mode == "overlap":
+            return overlap_enough
+        return centered_enough or overlap_enough
 
     def _wrist_ready_box(self) -> tuple[float, float, float, float]:
         return (
@@ -335,6 +421,20 @@ class GraspPipeline:
 
     def _wrist_ready_overlap_ratio(self, detection: TargetDetection) -> float:
         return self._box_overlap_ratio(detection.xyxy, self._wrist_ready_box())
+
+    def _wrist_safe_box(self) -> tuple[float, float, float, float]:
+        margin = max(0.0, self.wrist_visible_margin_px)
+        return (
+            margin,
+            margin,
+            self.frame_width - margin,
+            self.frame_height - margin,
+        )
+
+    def _wrist_safe_visible_ratio(self, detection: TargetDetection) -> float:
+        if self.wrist_min_box_visible_ratio <= 0:
+            return 1.0
+        return self._box_overlap_ratio(detection.xyxy, self._wrist_safe_box())
 
     def _box_overlap_ratio(
         self,
@@ -490,7 +590,13 @@ class GraspPipeline:
         self,
         wrist_det: TargetDetection,
         clear_enough: bool,
+        *,
+        force_forward: bool = False,
     ) -> None:
+        if self.wrist_visual_servo_mode == WRIST_SERVO_MODE_PROPORTIONAL:
+            self._move_with_wrist_proportional(wrist_det, clear_enough, force_forward=force_forward)
+            return
+
         error_x = wrist_det.uv[0] - self.wrist_target_x
         error_y = wrist_det.uv[1] - self.wrist_target_y
 
@@ -505,20 +611,87 @@ class GraspPipeline:
             self._spin_base(speed)
             return
 
-        if not clear_enough or abs(error_y) > self.wrist_ready_center_y_deadzone_px:
+        if force_forward or not clear_enough or abs(error_y) > self.wrist_ready_center_y_deadzone_px:
             forward_speed = int(
                 round(self.approach_speed * WRIST_SEEN_FORWARD_SPEED_RATIO)
             )
-            if clear_enough:
+            if clear_enough or force_forward:
                 forward_speed = int(
                     round(self.approach_speed * WRIST_Y_ADJUST_SPEED_RATIO)
                 )
-            if error_y > self.wrist_ready_center_y_deadzone_px:
+            if not force_forward and error_y > self.wrist_ready_center_y_deadzone_px:
                 forward_speed = -forward_speed
             self._drive_chassis(0, forward_speed, 0)
             return
 
         self._stop_wheels()
+
+    def _move_with_wrist_proportional(
+        self,
+        wrist_det: TargetDetection,
+        clear_enough: bool,
+        *,
+        force_forward: bool = False,
+    ) -> None:
+        error_x = wrist_det.uv[0] - self.wrist_target_x
+        error_y = wrist_det.uv[1] - self.wrist_target_y
+        omega = 0
+        vy = 0
+
+        if abs(error_x) > WRIST_ALIGN_DEADZONE_PX:
+            omega = self._signed_speed(
+                error_x,
+                kp=WRIST_ALIGN_KP,
+                min_speed=self.wrist_align_min_speed,
+                max_speed=self.wrist_align_max_speed,
+                direction_sign=WRIST_ALIGN_DIRECTION_SIGN,
+            )
+
+        if force_forward:
+            vy = int(round(self.approach_speed * WRIST_Y_ADJUST_SPEED_RATIO))
+        elif not clear_enough:
+            vy = int(round(self.approach_speed * WRIST_SEEN_FORWARD_SPEED_RATIO))
+        elif abs(error_y) > self.wrist_ready_center_y_deadzone_px:
+            y_speed = self._signed_speed(
+                error_y,
+                kp=WRIST_Y_ALIGN_KP,
+                min_speed=self.wrist_align_min_speed,
+                max_speed=int(round(self.approach_speed * WRIST_Y_ADJUST_SPEED_RATIO)),
+                direction_sign=1,
+            )
+            vy = -y_speed
+
+        if omega == 0 and vy == 0:
+            self._stop_wheels()
+            return
+
+        self._drive_chassis(0, vy, omega)
+
+    def _move_backward_for_wrist_fit(self) -> None:
+        backward_speed = -int(round(self.approach_speed * WRIST_Y_ADJUST_SPEED_RATIO))
+        self._drive_chassis(0, backward_speed, 0)
+
+    def _move_to_improve_wrist_visibility(self, wrist_det: TargetDetection) -> None:
+        x1, y1, x2, y2 = wrist_det.xyxy
+        sx1, sy1, sx2, sy2 = self._wrist_safe_box()
+        box_w = max(0.0, x2 - x1)
+        box_h = max(0.0, y2 - y1)
+
+        if box_w >= (sx2 - sx1) or box_h >= (sy2 - sy1):
+            self._move_backward_for_wrist_fit()
+            return
+
+        error_x = wrist_det.uv[0] - self.wrist_target_x
+        error_y = wrist_det.uv[1] - self.wrist_target_y
+        has_center_error = (
+            abs(error_x) > WRIST_ALIGN_DEADZONE_PX
+            or abs(error_y) > self.wrist_ready_center_y_deadzone_px
+        )
+        if has_center_error:
+            self._move_with_wrist_correction(wrist_det, clear_enough=True)
+            return
+
+        self._move_backward_for_wrist_fit()
 
     def _stop_wheels(self) -> None:
         self._drive_chassis(0, 0, 0, acc=255)
@@ -632,6 +805,15 @@ class GraspPipeline:
                 (255, 180, 0),
                 1,
             )
+            if self.wrist_min_box_visible_ratio > 0:
+                sx1, sy1, sx2, sy2 = self._wrist_safe_box()
+                cv2.rectangle(
+                    frame,
+                    (int(sx1), int(sy1)),
+                    (int(sx2), int(sy2)),
+                    (0, 220, 80),
+                    1,
+                )
         if detection is not None:
             x1, y1, x2, y2 = detection.xyxy
             cv2.rectangle(
@@ -654,13 +836,32 @@ class GraspPipeline:
                 f"area={detection.box_area_ratio:.3f}"
             )
             if name == "wrist":
-                clear, centered, overlap, overlap_ratio = self._wrist_ready_metrics(detection)
-                ready = clear and (centered or overlap)
+                (
+                    clear,
+                    centered,
+                    overlap,
+                    overlap_ratio,
+                    visible,
+                    not_too_large,
+                ) = self._wrist_ready_metrics(detection)
+                position_ready = self._wrist_position_ready(centered, overlap)
+                ready = clear and position_ready and visible and not_too_large
+                preferred_ready = (
+                    self.wrist_preferred_box_area_ratio <= 0
+                    or detection.box_area_ratio >= self.wrist_preferred_box_area_ratio
+                )
+                visible_ratio = self._wrist_safe_visible_ratio(detection)
                 label += (
                     f" overlap={overlap_ratio:.2f} "
+                    f"vis={visible_ratio:.2f} "
                     f"clear={'Y' if clear else 'N'} "
                     f"center={'Y' if centered else 'N'} "
-                    f"ready={'Y' if ready else 'N'}"
+                    f"fit={'Y' if visible else 'N'} "
+                    f"max={'Y' if not_too_large else 'N'} "
+                    f"mode={self.wrist_ready_position_mode} "
+                    f"ctrl={self.wrist_visual_servo_mode} "
+                    f"ready={'Y' if ready else 'N'} "
+                    f"pref={'Y' if preferred_ready else 'N'}"
                 )
             cv2.putText(
                 frame,
@@ -752,8 +953,23 @@ def main() -> None:
     parser.add_argument("--wrist-ready-deadzone-x", type=float, default=WRIST_READY_CENTER_X_DEADZONE_PX)
     parser.add_argument("--wrist-ready-deadzone-y", type=float, default=WRIST_READY_CENTER_Y_DEADZONE_PX)
     parser.add_argument("--wrist-ready-min-overlap", type=float, default=WRIST_READY_MIN_BOX_OVERLAP_RATIO)
+    parser.add_argument(
+        "--wrist-ready-position-mode",
+        choices=("center_or_overlap", "center", "overlap"),
+        default="center_or_overlap",
+    )
+    parser.add_argument("--wrist-preferred-box-area", type=float, default=0.0)
+    parser.add_argument("--wrist-preferred-timeout-s", type=float, default=0.0)
+    parser.add_argument("--wrist-min-box-visible-ratio", type=float, default=0.0)
+    parser.add_argument("--wrist-visible-margin-px", type=float, default=0.0)
+    parser.add_argument("--wrist-max-box-area", type=float, default=0.0)
     parser.add_argument("--wrist-min-conf", type=float, default=WRIST_MIN_CONF)
     parser.add_argument("--wrist-min-box-area", type=float, default=WRIST_MIN_BOX_AREA_RATIO)
+    parser.add_argument(
+        "--wrist-visual-servo-mode",
+        choices=(WRIST_SERVO_MODE_SEQUENTIAL, WRIST_SERVO_MODE_PROPORTIONAL),
+        default=WRIST_SERVO_MODE_SEQUENTIAL,
+    )
     parser.add_argument("--wheel-search-speed", type=int, default=WHEEL_SEARCH_SPEED)
     parser.add_argument("--wrist-align-max-speed", type=int, default=WRIST_ALIGN_MAX_SPEED)
     parser.add_argument("--wrist-align-min-speed", type=int, default=WRIST_ALIGN_MIN_SPEED)
@@ -793,8 +1009,15 @@ def main() -> None:
         wrist_ready_center_x_deadzone_px=args.wrist_ready_deadzone_x,
         wrist_ready_center_y_deadzone_px=args.wrist_ready_deadzone_y,
         wrist_ready_min_box_overlap_ratio=args.wrist_ready_min_overlap,
+        wrist_ready_position_mode=args.wrist_ready_position_mode,
+        wrist_preferred_box_area_ratio=args.wrist_preferred_box_area,
+        wrist_preferred_timeout_s=args.wrist_preferred_timeout_s,
+        wrist_min_box_visible_ratio=args.wrist_min_box_visible_ratio,
+        wrist_visible_margin_px=args.wrist_visible_margin_px,
+        wrist_max_box_area_ratio=args.wrist_max_box_area,
         wrist_min_conf=args.wrist_min_conf,
         wrist_min_box_area_ratio=args.wrist_min_box_area,
+        wrist_visual_servo_mode=args.wrist_visual_servo_mode,
         wheel_search_speed=args.wheel_search_speed,
         wrist_align_max_speed=args.wrist_align_max_speed,
         wrist_align_min_speed=args.wrist_align_min_speed,

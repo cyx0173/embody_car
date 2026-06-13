@@ -1,0 +1,26 @@
+{
+  "created_at": "2026-06-09 16:04:38",
+  "samples": [
+    {
+      "servo_id": 4,
+      "label": "low",
+      "leader": 2019,
+      "follower": 2044,
+      "timestamp_s": 1780992255.110404
+    },
+    {
+      "servo_id": 4,
+      "label": "mid",
+      "leader": 2031,
+      "follower": 3178,
+      "timestamp_s": 1780992270.941421
+    },
+    {
+      "servo_id": 4,
+      "label": "high",
+      "leader": 2031,
+      "follower": 254,
+      "timestamp_s": 1780992278.498399
+    }
+  ]
+}
