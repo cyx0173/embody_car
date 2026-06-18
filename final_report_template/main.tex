@@ -1,0 +1,155 @@
+\documentclass[UTF8,fontset=none,zihao=-4,a4paper]{ctexart}
+
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\setCJKmainfont[BoldFont={Heiti SC}]{Songti SC}
+\setCJKsansfont{Heiti SC}
+\setCJKmonofont{Songti SC}
+
+\geometry{
+  left=2.7cm,
+  right=2.7cm,
+  top=2.8cm,
+  bottom=2.8cm
+}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!55!black,
+  citecolor=blue!55!black,
+  urlcolor=blue!55!black,
+  pdftitle={期末报告},
+  pdfauthor={你的姓名}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{期末报告}
+\rhead{\leftmark}
+\cfoot{\thepage}
+\setlength{\headheight}{15pt}
+
+\setlist[itemize]{itemsep=0.2em, topsep=0.2em}
+\setlist[enumerate]{itemsep=0.2em, topsep=0.2em}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  keywordstyle=\color{blue!70!black},
+  commentstyle=\color{green!40!black},
+  stringstyle=\color{orange!70!black},
+  showstringspaces=false,
+  tabsize=2
+}
+
+\title{
+  \vspace{1.5cm}
+  {\bfseries\zihao{2} 期末报告题目}\\[0.8em]
+  {\large 课程名称：在这里填写课程名}
+}
+\author{
+  学生姓名：你的姓名\\
+  学号：你的学号\\
+  学院/专业：你的学院或专业
+}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+这里撰写中文摘要，简要说明报告的研究背景、目标、方法、主要结果与结论。摘要通常控制在 200--500 字之间。
+
+\noindent\textbf{关键词：} 关键词一；关键词二；关键词三
+\end{abstract}
+
+\newpage
+\tableofcontents
+\newpage
+
+\section{引言}
+
+本次期末项目，我们首先根据统一要求实现了一个~\cite{ctex}。
+
+\section{相关工作或理论基础}
+
+这一部分用于梳理已有工作、基本概念、理论模型或课程知识点。建议围绕报告主题组织，而不是简单罗列资料。
+
+\section{方法与实现}
+
+这里描述你的方案、实验流程、系统架构或算法设计。
+
+\subsection{公式示例}
+
+行间公式示例：
+\begin{equation}
+  y = f(x;\theta) + \epsilon
+\end{equation}
+
+\subsection{图片示例}
+
+将图片放在 \texttt{figures/} 文件夹中，然后用如下方式插入。当前示例先注释掉，等你放入图片后再启用。
+
+% \begin{figure}[htbp]
+%   \centering
+%   \includegraphics[width=0.75\textwidth]{figures/example.png}
+%   \caption{图片标题}
+%   \label{fig:example}
+% \end{figure}
+
+\subsection{表格示例}
+
+\begin{table}[htbp]
+  \centering
+  \caption{实验结果示例}
+  \label{tab:results}
+  \begin{tabular}{lccc}
+    \toprule
+    方法 & 指标一 & 指标二 & 指标三 \\
+    \midrule
+    基线方法 & 0.72 & 0.68 & 0.70 \\
+    本文方法 & 0.84 & 0.81 & 0.83 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{代码示例}
+
+\begin{lstlisting}[language=Python, caption={Python 代码示例}]
+def main():
+    print("你好，LaTeX！")
+
+if __name__ == "__main__":
+    main()
+\end{lstlisting}
+
+\section{实验与结果分析}
+
+这一部分说明实验环境、数据来源、评价指标与结果。建议先给出总体结果，再分析现象、原因和局限。
+
+\section{讨论}
+
+讨论部分可以写方法的优缺点、异常结果解释、和课程知识的联系，以及未来可以改进的方向。
+
+\section{结论}
+
+总结报告的核心工作、主要发现和个人收获。结论应简洁明确，避免引入新的实验或论点。
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}

@@ -265,6 +265,14 @@ def create_or_resume_dataset(
             "Use --resume to append episodes, or --overwrite to start over."
         )
     if root.exists() and resume:
+        info_path = root / "meta" / "info.json"
+        if not info_path.exists():
+            raise FileNotFoundError(
+                f"Dataset root exists but is missing {info_path}.\n"
+                "This usually means a previous recording was interrupted before the dataset was finalized, "
+                "or --root points to the wrong directory.\n"
+                "Use --overwrite to start a fresh dataset, or pass the correct --root to an existing dataset."
+            )
         return LeRobotDataset(
             repo_id,
             root=root,

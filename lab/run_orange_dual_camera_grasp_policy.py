@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the trained ACT policy that places a held orange into a bowl."""
+"""Run a dual-camera ACT policy that grasps a red-marked orange."""
 
 from __future__ import annotations
 
@@ -20,51 +20,34 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from arm_control import ServoController
+from mark_one_bowl import YOLOSegMarker
 from orange_grasp_config import (
+    DEFAULT_DUAL_GRASP_POLICY_PATH,
     DEFAULT_FOLLOWER_PORT,
-    DEFAULT_PLACE_POLICY_PATH,
     FOLLOWER_MAX_TARGET_STEP_TICKS,
     GRIPPER_MAX_TARGET_STEP_TICKS,
+    JOINT_MAP,
     MIN_DELTA_TICKS,
-    ORANGE_PLACE_POLICY_DURATION_S,
+    ORANGE_FINAL_CLOSE_POS,
     ORANGE_POLICY_ACC,
+    ORANGE_POLICY_DURATION_S,
     ORANGE_POLICY_FPS,
     ORANGE_POLICY_SPEED,
-    PLACE_RESET_HOLD_POS,
-    PLACE_RESET_OPEN_POS,
-    RESET_ORDER_GROUPS,
+    RESET_BEFORE_POS,
+    clamp,
     positions_to_array,
     sanitize_follower_positions,
 )
+from record_orange_dual_camera_dataset import RED_BGR
+from record_orange_to_bowl_dual_camera_dataset import open_camera, read_dual_camera_frames
 from run_orange_act_policy import (
     clamp_action,
     limit_action_step,
     read_follower_positions,
-    read_wrist_frame,
     reset_follower,
     send_action,
 )
-
-
-REQUIRED_POLICY_FILES = (
-    "config.json",
-    "model.safetensors",
-    "policy_preprocessor.json",
-    "policy_preprocessor_step_3_normalizer_processor.safetensors",
-    "policy_postprocessor.json",
-    "policy_postprocessor_step_0_unnormalizer_processor.safetensors",
-    "train_config.json",
-)
-
-
-def choose_device(requested: str) -> str:
-    if requested != "auto":
-        return requested
-    if torch.backends.mps.is_available():
-        return "mps"
-    if torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
+from run_orange_to_bowl_policy import REQUIRED_POLICY_FILES, choose_device
 
 
 def validate_policy_path(policy_path: Path) -> None:
@@ -78,6 +61,7 @@ def validate_policy_path(policy_path: Path) -> None:
     train_config_path = policy_path / "train_config.json"
     with train_config_path.open("r", encoding="utf-8") as f:
         train_config = json.load(f)
+
     config_path = policy_path / "config.json"
     with config_path.open("r", encoding="utf-8") as f:
         policy_config = json.load(f)
@@ -85,110 +69,92 @@ def validate_policy_path(policy_path: Path) -> None:
         policy_config = {"type": "act", **policy_config}
         config_path.write_text(json.dumps(policy_config, indent=4) + "\n", encoding="utf-8")
         print(f"Patched policy config for local LeRobot compatibility: {config_path}")
+
     repo_id = train_config.get("dataset", {}).get("repo_id")
     policy_type = train_config.get("policy", {}).get("type")
     input_features = train_config.get("policy", {}).get("input_features", {})
     output_features = train_config.get("policy", {}).get("output_features", {})
 
-    expected_repo_ids = {
-        "embody_car/orange_to_bowl_wrist_place_v1",
-        "embody_car/orange_to_bowl_wrist_place_merged_v1",
-    }
-    if repo_id not in expected_repo_ids:
-        print(f"WARNING: train_config dataset repo_id is {repo_id!r}, expected orange_to_bowl.")
     if policy_type != "act":
         print(f"WARNING: train_config policy type is {policy_type!r}, expected 'act'.")
     if "observation.images.wrist" not in input_features:
         print("WARNING: policy input does not list observation.images.wrist.")
+    if "observation.images.external" not in input_features:
+        print("WARNING: policy input does not list observation.images.external.")
     if output_features.get("action", {}).get("shape") != [6]:
         print(f"WARNING: policy action shape is {output_features.get('action', {}).get('shape')}, expected [6].")
+    print(f"Policy dataset repo_id: {repo_id}")
 
 
-def wait_for_enter(prompt: str, *, enabled: bool = True) -> None:
-    if not enabled:
-        print(prompt)
-        return
-    try:
-        input(prompt)
-    except EOFError as exc:
-        raise RuntimeError(
-            "This preparation flow needs an interactive terminal. "
-            "Run it from your terminal or pass --no-prompt intentionally."
-        ) from exc
+def image_to_tensor(rgb: np.ndarray) -> torch.Tensor:
+    return torch.from_numpy(np.ascontiguousarray(rgb)).float().permute(2, 0, 1) / 255.0
 
 
-def build_hold_reset_pos(hold_gripper_pos: int | None) -> dict[int, int]:
-    reset_pos = dict(PLACE_RESET_HOLD_POS)
-    if hold_gripper_pos is not None:
-        reset_pos[6] = int(hold_gripper_pos)
-    return reset_pos
-
-
-def reset_or_preview(
-    arm: ServoController,
+def show_dual_preview(
     *,
-    reset_pos: dict[int, int],
-    args: argparse.Namespace,
-    label: str,
-) -> dict[int, int]:
-    if not args.execute:
-        print(f"[DRY RUN] would move {label} -> {reset_pos}")
-        return dict(reset_pos)
-    print(f"Move {label} -> {reset_pos}")
-    return reset_follower(
-        arm,
-        reset_pos=reset_pos,
-        speed=args.reset_speed,
-        acc=args.reset_acc,
-        stage_delay_s=args.reset_stage_delay_s,
+    wrist_rgb: np.ndarray,
+    external_rgb: np.ndarray,
+    mode: str,
+    frame_index: int,
+    frame_count: int,
+    execute: bool,
+    marker_meta: dict | None,
+) -> bool:
+    wrist_preview = cv2.cvtColor(wrist_rgb, cv2.COLOR_RGB2BGR)
+    external_preview = cv2.cvtColor(external_rgb, cv2.COLOR_RGB2BGR)
+    color = (0, 255, 0) if execute else (0, 255, 255)
+    cv2.putText(
+        wrist_preview,
+        f"{mode} wrist {frame_index}/{frame_count}",
+        (16, 28),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        color,
+        2,
+        cv2.LINE_AA,
     )
-
-
-def prepare_held_orange(
-    arm: ServoController,
-    *,
-    args: argparse.Namespace,
-) -> dict[int, int]:
-    print("Preparing held orange for place policy.")
-    last_sent = reset_or_preview(
-        arm,
-        reset_pos=PLACE_RESET_OPEN_POS,
-        args=args,
-        label="open reset",
-    )
-    wait_for_enter(
-        "\nPut the orange into the open gripper, place the bowl in view, then press Enter.",
-        enabled=not args.no_prompt,
-    )
-
-    hold_pos = build_hold_reset_pos(args.hold_gripper_pos)
-    last_sent.update(
-        reset_or_preview(
-            arm,
-            reset_pos=hold_pos,
-            args=args,
-            label="holding reset",
+    marker_text = "marker=none"
+    if marker_meta:
+        marker_text = (
+            f"marker={marker_meta.get('class_name')} "
+            f"conf={marker_meta.get('confidence') or 0.0:.2f}"
         )
+    cv2.putText(
+        external_preview,
+        f"{mode} external {frame_index}/{frame_count}",
+        (16, 28),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        color,
+        2,
+        cv2.LINE_AA,
     )
-    if args.hold_settle_s > 0:
-        time.sleep(args.hold_settle_s)
-    if args.pre_run_delay_s > 0:
-        print(f"Waiting {args.pre_run_delay_s:.1f}s before policy run. Move your hand out of view.")
-        time.sleep(args.pre_run_delay_s)
-    return last_sent
+    cv2.putText(
+        external_preview,
+        marker_text,
+        (16, 58),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        color,
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.imshow("orange_dual_camera_grasp_policy", cv2.hconcat([wrist_preview, external_preview]))
+    return (cv2.waitKey(1) & 0xFF) != ord("q")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run the orange-to-bowl ACT policy with wrist camera observations."
+        description="Run the red-external-marker dual-camera orange grasp ACT policy."
     )
-    parser.add_argument("--policy-path", type=Path, default=DEFAULT_PLACE_POLICY_PATH)
+    parser.add_argument("--policy-path", type=Path, default=DEFAULT_DUAL_GRASP_POLICY_PATH)
     parser.add_argument("--follower-port", default=DEFAULT_FOLLOWER_PORT)
     parser.add_argument("--wrist-camera", type=int, default=2)
+    parser.add_argument("--external-camera", type=int, default=0)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=float, default=ORANGE_POLICY_FPS)
-    parser.add_argument("--duration-s", type=float, default=ORANGE_PLACE_POLICY_DURATION_S)
+    parser.add_argument("--duration-s", type=float, default=ORANGE_POLICY_DURATION_S)
     parser.add_argument("--speed", type=int, default=ORANGE_POLICY_SPEED)
     parser.add_argument("--acc", type=int, default=ORANGE_POLICY_ACC)
     parser.add_argument("--min-delta", type=int, default=MIN_DELTA_TICKS)
@@ -202,43 +168,52 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="auto",
         help="Policy inference device. auto prefers MPS on Mac, then CUDA, then CPU.",
     )
-    parser.add_argument(
-        "--reset-hold-before",
-        action="store_true",
-        help="Move to the place-task holding reset before running. Put the orange in the gripper first.",
-    )
-    parser.add_argument(
-        "--prepare-held-orange",
-        action="store_true",
-        help="Open the gripper reset, wait for you to load the orange, close to holding reset, then run policy.",
-    )
-    parser.add_argument("--hold-gripper-pos", type=int, default=None)
-    parser.add_argument("--hold-settle-s", type=float, default=0.4)
-    parser.add_argument("--pre-run-delay-s", type=float, default=2.0)
-    parser.add_argument("--no-prompt", action="store_true")
-    parser.add_argument(
-        "--return-open-after",
-        action="store_true",
-        help="Move to the open reset after the policy run.",
-    )
+    parser.add_argument("--reset-before", action="store_true")
     parser.add_argument("--reset-speed", type=int, default=1300)
     parser.add_argument("--reset-acc", type=int, default=55)
     parser.add_argument("--reset-stage-delay-s", type=float, default=0.9)
-    parser.add_argument("--no-rotate-180", action="store_true")
+    parser.add_argument("--final-close", dest="final_close", action="store_true")
+    parser.add_argument("--no-final-close", dest="final_close", action="store_false")
+    parser.add_argument("--final-close-pos", type=int, default=ORANGE_FINAL_CLOSE_POS)
+    parser.add_argument("--final-close-hold-s", type=float, default=1.0)
+    parser.add_argument(
+        "--return-after-close",
+        action="store_true",
+        help="After final close, move joints 1-5 to reset while keeping the gripper closed.",
+    )
+    parser.add_argument("--no-wrist-rotate-180", action="store_true")
+    parser.add_argument("--external-rotate-180", action="store_true")
+    parser.add_argument("--marker-model", default=str(BASE_DIR / "yolo11s.pt"))
+    parser.add_argument("--marker-target", default="orange")
+    parser.add_argument("--marker-device", default="cpu")
+    parser.add_argument("--marker-conf", type=float, default=0.25)
+    parser.add_argument("--marker-iou", type=float, default=0.7)
+    parser.add_argument("--marker-alpha", type=float, default=0.20)
+    parser.add_argument("--marker-thickness", type=int, default=6)
+    parser.add_argument("--marker-mode", choices=("bbox", "mask", "both"), default="bbox")
+    parser.add_argument(
+        "--marker-choose",
+        choices=("largest", "highest_conf", "nearest_center", "leftmost", "rightmost"),
+        default="largest",
+    )
     parser.add_argument("--show", action="store_true")
     parser.add_argument("--execute", action="store_true", help="Actually send policy actions to the follower arm.")
+    parser.set_defaults(final_close=True)
     return parser
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    if args.wrist_camera == args.external_camera:
+        raise ValueError("wrist camera and external camera must use different indexes.")
+
     policy_path = args.policy_path.expanduser().resolve()
     if not policy_path.exists():
         raise FileNotFoundError(f"Policy path does not exist: {policy_path}")
     validate_policy_path(policy_path)
 
     device = choose_device(args.device)
-    print(f"Loading orange-to-bowl policy from {policy_path}")
+    print(f"Loading dual-camera orange grasp policy from {policy_path}")
     print(f"Inference device: {device}")
     policy = ACTPolicy.from_pretrained(policy_path, local_files_only=True, device=device)
     preprocessor = DataProcessorPipeline.from_pretrained(
@@ -257,33 +232,58 @@ def main() -> None:
     policy.eval()
     policy.reset()
 
-    camera = cv2.VideoCapture(args.wrist_camera)
-    camera.set(cv2.CAP_PROP_FRAME_WIDTH, float(args.width))
-    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, float(args.height))
-    camera.set(cv2.CAP_PROP_FPS, float(args.fps))
-    if not camera.isOpened():
-        raise RuntimeError(f"Failed to open wrist camera index {args.wrist_camera}.")
+    wrist_camera = open_camera(
+        args.wrist_camera,
+        width=args.width,
+        height=args.height,
+        fps=int(round(args.fps)),
+        name="wrist",
+    )
+    external_camera = open_camera(
+        args.external_camera,
+        width=args.width,
+        height=args.height,
+        fps=int(round(args.fps)),
+        name="external",
+    )
+    args.external_marker = YOLOSegMarker(
+        model=args.marker_model,
+        device=args.marker_device,
+        conf=args.marker_conf,
+        iou=args.marker_iou,
+        alpha=args.marker_alpha,
+        thickness=args.marker_thickness,
+        mode=args.marker_mode,
+        choose=args.marker_choose,
+        color_bgr=RED_BGR,
+    )
+    args.episode_target_bowl_choice = args.marker_choose
+    args.episode_target_bowl_label = args.marker_target
+    args.episode_marker_bbox = None
+    args.last_marker_meta = None
 
     arm = ServoController(port=args.follower_port)
     last_state: np.ndarray | None = None
     last_sent: dict[int, int] = {}
-    if args.prepare_held_orange:
-        last_sent.update(prepare_held_orange(arm, args=args))
-        last_state = positions_to_array(last_sent)
-    elif args.reset_hold_before:
+    if args.reset_before:
         last_sent.update(
-            reset_or_preview(
+            reset_follower(
                 arm,
-                reset_pos=build_hold_reset_pos(args.hold_gripper_pos),
-                args=args,
-                label="holding reset",
+                reset_pos=RESET_BEFORE_POS,
+                speed=args.reset_speed,
+                acc=args.reset_acc,
+                stage_delay_s=args.reset_stage_delay_s,
             )
         )
         last_state = positions_to_array(last_sent)
 
     mode = "EXECUTE" if args.execute else "DRY RUN"
     print(f"{mode}: duration={args.duration_s}s fps={args.fps}")
-    print("Task assumption: start with the orange already held in the gripper and the bowl in wrist view.")
+    print(f"Camera indexes: wrist={args.wrist_camera}, external={args.external_camera}")
+    print(
+        "External red marker: "
+        f"target={args.marker_target}, choose={args.marker_choose}, model={args.marker_model}"
+    )
     print("Press Ctrl+C to stop.")
 
     frame_count = max(1, int(round(args.duration_s * args.fps)))
@@ -291,11 +291,10 @@ def main() -> None:
     overruns = 0
     try:
         for frame_index in range(frame_count):
-            preview, image = read_wrist_frame(
-                camera,
-                width=args.width,
-                height=args.height,
-                rotate_180=not args.no_rotate_180,
+            wrist_rgb, external_rgb = read_dual_camera_frames(
+                wrist_camera=wrist_camera,
+                external_camera=external_camera,
+                args=args,
             )
             follower_positions = sanitize_follower_positions(
                 read_follower_positions(arm, (1, 2, 3, 4, 5, 6)),
@@ -312,7 +311,8 @@ def main() -> None:
             )
             observation = {
                 "observation.state": torch.from_numpy(state).float(),
-                "observation.images.wrist": image,
+                "observation.images.wrist": image_to_tensor(wrist_rgb),
+                "observation.images.external": image_to_tensor(external_rgb),
             }
             batch = preprocessor.process_observation(observation)
             with torch.no_grad():
@@ -339,21 +339,23 @@ def main() -> None:
             last_state = state
 
             if frame_index % max(1, int(args.fps)) == 0:
-                print(f"frame={frame_index + 1}/{frame_count} state={state.astype(int).tolist()} action={action.tolist()}")
+                print(
+                    f"frame={frame_index + 1}/{frame_count} "
+                    f"state={state.astype(int).tolist()} "
+                    f"action={action.tolist()} "
+                    f"marker={getattr(args, 'last_marker_meta', None)}"
+                )
 
             if args.show:
-                cv2.putText(
-                    preview,
-                    f"{mode} place frame {frame_index + 1}/{frame_count}",
-                    (16, 28),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 255, 0) if args.execute else (0, 255, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-                cv2.imshow("orange_to_bowl_policy", preview)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                if not show_dual_preview(
+                    wrist_rgb=wrist_rgb,
+                    external_rgb=external_rgb,
+                    mode=mode,
+                    frame_index=frame_index + 1,
+                    frame_count=frame_count,
+                    execute=args.execute,
+                    marker_meta=getattr(args, "last_marker_meta", None),
+                ):
                     break
 
             next_time += 1.0 / args.fps
@@ -365,19 +367,35 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nStopped by user.")
     finally:
-        if args.return_open_after:
-            print(f"Return open reset -> {PLACE_RESET_OPEN_POS}")
+        if args.final_close:
+            target = clamp(args.final_close_pos, JOINT_MAP[6]["follower_min"], JOINT_MAP[6]["follower_max"])
+            print(f"Final close gripper -> {target}")
+            last_sent[6] = target
+            if args.execute:
+                arm.move_to(6, target, speed=args.speed, acc=args.acc)
+                time.sleep(args.final_close_hold_s)
+        if args.return_after_close:
+            reset_closed = {
+                1: RESET_BEFORE_POS[1],
+                2: RESET_BEFORE_POS[2],
+                3: RESET_BEFORE_POS[3],
+                4: RESET_BEFORE_POS[4],
+                5: RESET_BEFORE_POS[5],
+                6: clamp(args.final_close_pos, JOINT_MAP[6]["follower_min"], JOINT_MAP[6]["follower_max"]),
+            }
+            print(f"Return after close -> {reset_closed}")
             if args.execute:
                 reset_follower(
                     arm,
-                    reset_pos=PLACE_RESET_OPEN_POS,
+                    reset_pos=reset_closed,
                     speed=args.reset_speed,
                     acc=args.reset_acc,
                     stage_delay_s=args.reset_stage_delay_s,
                 )
         if overruns:
             print(f"Loop overran target fps on {overruns}/{frame_count} frames.")
-        camera.release()
+        wrist_camera.release()
+        external_camera.release()
         if args.show:
             cv2.destroyAllWindows()
         if hasattr(arm, "_ser"):

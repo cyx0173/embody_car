@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -42,6 +43,59 @@ from orange_grasp_config import (
     positions_to_array,
     sanitize_follower_positions,
 )
+
+
+REQUIRED_POLICY_FILES = (
+    "config.json",
+    "model.safetensors",
+    "policy_preprocessor.json",
+    "policy_preprocessor_step_3_normalizer_processor.safetensors",
+    "policy_postprocessor.json",
+    "policy_postprocessor_step_0_unnormalizer_processor.safetensors",
+    "train_config.json",
+)
+
+
+def choose_device(requested: str) -> str:
+    if requested != "auto":
+        return requested
+    if torch.backends.mps.is_available():
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
+def validate_policy_path(policy_path: Path) -> None:
+    missing = [name for name in REQUIRED_POLICY_FILES if not (policy_path / name).exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"Policy path is missing required files: {missing}\n"
+            f"path={policy_path}"
+        )
+
+    train_config_path = policy_path / "train_config.json"
+    with train_config_path.open("r", encoding="utf-8") as f:
+        train_config = json.load(f)
+    config_path = policy_path / "config.json"
+    with config_path.open("r", encoding="utf-8") as f:
+        policy_config = json.load(f)
+    if policy_config.get("type") is None:
+        policy_config = {"type": "act", **policy_config}
+        config_path.write_text(json.dumps(policy_config, indent=4) + "\n", encoding="utf-8")
+        print(f"Patched policy config for local LeRobot compatibility: {config_path}")
+    repo_id = train_config.get("dataset", {}).get("repo_id")
+    policy_type = train_config.get("policy", {}).get("type")
+    input_features = train_config.get("policy", {}).get("input_features", {})
+    output_features = train_config.get("policy", {}).get("output_features", {})
+
+    if policy_type != "act":
+        print(f"WARNING: train_config policy type is {policy_type!r}, expected 'act'.")
+    if "observation.images.wrist" not in input_features:
+        print("WARNING: policy input does not list observation.images.wrist.")
+    if output_features.get("action", {}).get("shape") != [6]:
+        print(f"WARNING: policy action shape is {output_features.get('action', {}).get('shape')}, expected [6].")
+    print(f"Policy dataset repo_id: {repo_id}")
 
 
 def parse_offsets(text: str) -> dict[int, int]:
@@ -174,7 +228,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--policy-path", type=Path, default=DEFAULT_POLICY_PATH)
     parser.add_argument("--follower-port", default=DEFAULT_FOLLOWER_PORT)
-    parser.add_argument("--wrist-camera", type=int, default=1)
+    parser.add_argument("--wrist-camera", type=int, default=2)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=float, default=ORANGE_POLICY_FPS)
@@ -186,6 +240,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gripper-target-max-step", type=int, default=GRIPPER_MAX_TARGET_STEP_TICKS)
     parser.add_argument("--state-max-jump", type=int, default=900)
     parser.add_argument("--state-range-margin", type=int, default=80)
+    parser.add_argument(
+        "--device",
+        choices=("auto", "cpu", "mps", "cuda"),
+        default="auto",
+        help="Policy inference device. auto prefers MPS on Mac, then CUDA, then CPU.",
+    )
     parser.add_argument("--reset-before", action="store_true")
     parser.add_argument("--reset-speed", type=int, default=1300)
     parser.add_argument("--reset-acc", type=int, default=55)
@@ -242,19 +302,25 @@ def main() -> None:
     policy_path = args.policy_path.expanduser().resolve()
     if not policy_path.exists():
         raise FileNotFoundError(f"Policy path does not exist: {policy_path}")
+    validate_policy_path(policy_path)
 
+    device = choose_device(args.device)
     print(f"Loading policy from {policy_path}")
-    policy = ACTPolicy.from_pretrained(policy_path, local_files_only=True)
+    print(f"Inference device: {device}")
+    policy = ACTPolicy.from_pretrained(policy_path, local_files_only=True, device=device)
     preprocessor = DataProcessorPipeline.from_pretrained(
         policy_path,
         config_filename="policy_preprocessor.json",
         local_files_only=True,
+        overrides={"device_processor": {"device": device}},
     )
     postprocessor = DataProcessorPipeline.from_pretrained(
         policy_path,
         config_filename="policy_postprocessor.json",
         local_files_only=True,
+        overrides={"device_processor": {"device": device}},
     )
+    policy.to(device)
     policy.eval()
     policy.reset()
 

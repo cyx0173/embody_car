@@ -89,7 +89,7 @@ DEFAULT_POLICY_PATH = (
     WORKSPACE_DIR
     / "outputs"
     / "train"
-    / "orange_act_cuda_v1_20260527_170537"
+    / "orange_act_plus_dual_wrist_4gpu_v1"
     / "checkpoints"
     / "last"
     / "pretrained_model"
@@ -109,7 +109,19 @@ DEFAULT_DUAL_PLACE_POLICY_PATH = (
     WORKSPACE_DIR
     / "outputs"
     / "train"
-    / "orange_to_bowl_merge"
+    / "orange_to_bowl_marked_dual_act_plus_4gpu_v1"
+    / "checkpoints"
+    / "last"
+    / "pretrained_model"
+)
+
+DEFAULT_DUAL_GRASP_POLICY_PATH = (
+    WORKSPACE_DIR
+    / "outputs"
+    / "train"
+    / "orange_grasp_red_external_dual_act_4gpu_v1"
+    / "checkpoints"
+    / "last"
     / "pretrained_model"
 )
 

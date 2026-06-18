@@ -15,6 +15,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from leader_follower_teleop import LeaderFollowerTeleop
+from mark_one_bowl import YOLOSegMarker
 from orange_grasp_config import (
     DEFAULT_DUAL_PLACE_DATASET_NAME,
     DEFAULT_DUAL_PLACE_REPO_ID,
@@ -45,6 +46,11 @@ from record_orange_to_bowl_dataset import (
     make_place_rebase_anchor,
     send_place_rebased_follower_positions,
 )
+
+
+DEFAULT_MARKED_BOWL_DATASET_NAME = "orange_to_bowl_marked_dual_camera_place_v1"
+DEFAULT_MARKED_BOWL_REPO_ID = f"embody_car/{DEFAULT_MARKED_BOWL_DATASET_NAME}"
+DEFAULT_MARKED_BOWL_TASK = "place the orange into the marked bowl"
 
 
 def make_dual_camera_features(*, height: int, width: int) -> dict:
@@ -124,7 +130,67 @@ def read_dual_camera_frames(
         height=args.height,
         rotate_180=args.external_rotate_180,
     )
+    marker = getattr(args, "external_marker", None)
+    target_bowl_choice = getattr(args, "episode_target_bowl_choice", None)
+    if marker is not None and target_bowl_choice is not None:
+        external_bgr = cv2.cvtColor(external_image, cv2.COLOR_RGB2BGR)
+        bbox = getattr(args, "episode_marker_bbox", None)
+        if bbox is not None:
+            marked_bgr = marker.draw_bbox(external_bgr, bbox)
+        else:
+            marker.choose = target_bowl_choice
+            marked_bgr, meta = marker.infer(
+                external_bgr,
+                args.marker_target,
+                return_meta=True,
+                mode=args.marker_mode,
+            )
+            args.last_marker_meta = meta
+        external_image = cv2.cvtColor(marked_bgr, cv2.COLOR_BGR2RGB)
     return wrist_image, external_image
+
+
+def capture_episode_marker_bbox(
+    *,
+    external_camera: cv2.VideoCapture,
+    args: argparse.Namespace,
+) -> tuple[int, int, int, int] | None:
+    marker = getattr(args, "external_marker", None)
+    target_bowl_choice = getattr(args, "episode_target_bowl_choice", None)
+    if marker is None or target_bowl_choice is None:
+        return None
+
+    external_image = read_camera_frame(
+        external_camera,
+        name="external",
+        width=args.width,
+        height=args.height,
+        rotate_180=args.external_rotate_180,
+    )
+    external_bgr = cv2.cvtColor(external_image, cv2.COLOR_RGB2BGR)
+    marker.choose = target_bowl_choice
+    marked_bgr, meta = marker.infer(
+        external_bgr,
+        args.marker_target,
+        return_meta=True,
+        mode=args.marker_mode,
+    )
+    args.last_marker_meta = meta
+    bbox = meta.get("bbox_xyxy")
+    if not meta.get("found") or bbox is None:
+        print(f"WARNING: target bowl marker not found: {meta}")
+        return None
+    print(
+        "Marked target bowl: "
+        f"{args.episode_target_bowl_label}, "
+        f"class={meta.get('class_name')}, "
+        f"conf={meta.get('confidence'):.2f}, "
+        f"bbox={bbox}"
+    )
+    if args.show:
+        cv2.imshow("selected_target_bowl_marker", marked_bgr)
+        cv2.waitKey(300)
+    return tuple(int(v) for v in bbox)
 
 
 def show_dual_preview(
@@ -289,10 +355,18 @@ def record_dual_place_episode(
             stage_delay_s=args.reset_stage_delay_s,
         )
 
+    if getattr(args, "mark_external_bowl", False):
+        print(f"Target bowl marker: {args.episode_target_bowl_label}")
+
     wait_for_enter(
         "\nPlace the orange in the gripper, place the bowl, check both cameras, then press Enter.",
         enabled=not args.no_prompt,
     )
+    if getattr(args, "mark_external_bowl", False):
+        args.episode_marker_bbox = capture_episode_marker_bbox(
+            external_camera=external_camera,
+            args=args,
+        )
 
     if args.close_gripper_before_record:
         reset_follower(
@@ -411,8 +485,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Record dual-camera episodes for placing a held orange into a bowl."
     )
-    parser.add_argument("--task", default=DEFAULT_PLACE_TASK)
-    parser.add_argument("--repo-id", default=DEFAULT_DUAL_PLACE_REPO_ID)
+    parser.add_argument("--task", default=None)
+    parser.add_argument("--repo-id", default=None)
     parser.add_argument("--root", default=None)
     parser.add_argument("--num-episodes", type=int, default=1)
     parser.add_argument("--resume", action="store_true")
@@ -433,7 +507,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state-max-jump", type=int, default=900)
     parser.add_argument("--state-range-margin", type=int, default=80)
 
-    parser.add_argument("--wrist-camera", type=int, default=1)
+    parser.add_argument("--wrist-camera", type=int, default=2)
     parser.add_argument("--external-camera", type=int, default=0)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
@@ -462,6 +536,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-rebase-leader-to-reset", dest="rebase_leader_to_reset", action="store_false")
     parser.add_argument("--no-wrist-rotate-180", action="store_true")
     parser.add_argument("--external-rotate-180", action="store_true")
+    parser.add_argument(
+        "--mark-external-bowl",
+        action="store_true",
+        help="Draw a blue marker on the selected target bowl in the external camera observation.",
+    )
+    parser.add_argument("--marker-model", default=str(BASE_DIR / "yolo11s.pt"))
+    parser.add_argument("--marker-target", default="bowl")
+    parser.add_argument("--marker-device", default="cpu")
+    parser.add_argument("--marker-conf", type=float, default=0.25)
+    parser.add_argument("--marker-iou", type=float, default=0.7)
+    parser.add_argument("--marker-alpha", type=float, default=0.20)
+    parser.add_argument("--marker-thickness", type=int, default=6)
+    parser.add_argument("--marker-mode", choices=("bbox", "mask", "both"), default="bbox")
+    parser.add_argument(
+        "--target-bowl",
+        choices=("prompt", "left", "right", "alternate-left-first", "alternate-right-first"),
+        default="prompt",
+        help="Which bowl to mark in the external camera for each episode.",
+    )
     parser.add_argument("--show", action="store_true")
     parser.add_argument("--no-prompt", action="store_true")
     parser.add_argument(
@@ -482,9 +575,41 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def resolve_target_bowl_choice(args: argparse.Namespace, episode_idx: int) -> tuple[str | None, str | None]:
+    if not args.mark_external_bowl:
+        return None, None
+
+    choice = args.target_bowl
+    if choice == "prompt":
+        if args.no_prompt:
+            raise ValueError("--target-bowl prompt cannot be used together with --no-prompt.")
+        while True:
+            raw = input("\nSelect target bowl for this episode [l/r]: ").strip().lower()
+            if raw in {"l", "left", "leftmost"}:
+                return "leftmost", "left"
+            if raw in {"r", "right", "rightmost"}:
+                return "rightmost", "right"
+            print("Please enter l or r.")
+    if choice == "left":
+        return "leftmost", "left"
+    if choice == "right":
+        return "rightmost", "right"
+    if choice == "alternate-left-first":
+        return ("leftmost", "left") if episode_idx % 2 == 0 else ("rightmost", "right")
+    if choice == "alternate-right-first":
+        return ("rightmost", "right") if episode_idx % 2 == 0 else ("leftmost", "left")
+    raise ValueError(f"Unsupported target bowl choice: {choice}")
+
+
 def main() -> None:
     args = build_arg_parser().parse_args()
-    root = Path(args.root) if args.root else WORKSPACE_DIR / "datasets" / DEFAULT_DUAL_PLACE_DATASET_NAME
+    if args.task is None:
+        args.task = DEFAULT_MARKED_BOWL_TASK if args.mark_external_bowl else DEFAULT_PLACE_TASK
+    if args.repo_id is None:
+        args.repo_id = DEFAULT_MARKED_BOWL_REPO_ID if args.mark_external_bowl else DEFAULT_DUAL_PLACE_REPO_ID
+
+    default_root_name = DEFAULT_MARKED_BOWL_DATASET_NAME if args.mark_external_bowl else DEFAULT_DUAL_PLACE_DATASET_NAME
+    root = Path(args.root) if args.root else WORKSPACE_DIR / "datasets" / default_root_name
     reset_open_pos = parse_positions(args.reset_open_pos)
     reset_hold_pos = parse_positions(args.reset_hold_pos)
     servo_ids = parse_ids(args.servo_ids)
@@ -495,6 +620,23 @@ def main() -> None:
 
     if args.wrist_camera == args.external_camera:
         raise ValueError("wrist camera and external camera must use different indexes.")
+
+    args.external_marker = None
+    args.episode_target_bowl_choice = None
+    args.episode_target_bowl_label = None
+    args.episode_marker_bbox = None
+    args.last_marker_meta = None
+    if args.mark_external_bowl:
+        args.external_marker = YOLOSegMarker(
+            model=args.marker_model,
+            device=args.marker_device,
+            conf=args.marker_conf,
+            iou=args.marker_iou,
+            alpha=args.marker_alpha,
+            thickness=args.marker_thickness,
+            mode=args.marker_mode,
+            choose="leftmost",
+        )
 
     if args.overwrite and root.exists():
         shutil.rmtree(root)
@@ -549,12 +691,22 @@ def main() -> None:
     print(f"Reset open: {reset_open_pos}")
     print(f"Reset hold: {reset_hold_pos}")
     print(f"Wrist camera: {args.wrist_camera}, external camera: {args.external_camera}")
+    if args.mark_external_bowl:
+        print(
+            "External marker: "
+            f"target={args.marker_target}, model={args.marker_model}, "
+            f"choice={args.target_bowl}"
+        )
     print(f"Image size={args.width}x{args.height}, fps={args.fps}")
     print("Press q in the preview window to end an episode early.")
 
     try:
         for episode_idx in range(args.num_episodes):
             print(f"\n=== Dual-Camera Place Episode {episode_idx + 1}/{args.num_episodes} ===")
+            choice, label = resolve_target_bowl_choice(args, episode_idx)
+            args.episode_target_bowl_choice = choice
+            args.episode_target_bowl_label = label
+            args.episode_marker_bbox = None
             record_dual_place_episode(
                 dataset=dataset,
                 teleop=teleop,

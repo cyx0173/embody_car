@@ -20,6 +20,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from arm_control import ServoController
+from mark_one_bowl import YOLOSegMarker
 from orange_grasp_config import (
     DEFAULT_DUAL_PLACE_POLICY_PATH,
     DEFAULT_FOLLOWER_PORT,
@@ -62,6 +63,13 @@ def validate_policy_path(policy_path: Path) -> None:
     train_config_path = policy_path / "train_config.json"
     with train_config_path.open("r", encoding="utf-8") as f:
         train_config = json.load(f)
+    config_path = policy_path / "config.json"
+    with config_path.open("r", encoding="utf-8") as f:
+        policy_config = json.load(f)
+    if policy_config.get("type") is None:
+        policy_config = {"type": "act", **policy_config}
+        config_path.write_text(json.dumps(policy_config, indent=4) + "\n", encoding="utf-8")
+        print(f"Patched policy config for local LeRobot compatibility: {config_path}")
     repo_id = train_config.get("dataset", {}).get("repo_id")
     policy_type = train_config.get("policy", {}).get("type")
     input_features = train_config.get("policy", {}).get("input_features", {})
@@ -94,6 +102,8 @@ def read_external_frame(
     width: int,
     height: int,
     rotate_180: bool,
+    marker: YOLOSegMarker | None = None,
+    marker_bbox: tuple[int, int, int, int] | None = None,
 ) -> tuple[np.ndarray, torch.Tensor]:
     ok, frame = camera.read()
     if not ok or frame is None:
@@ -102,9 +112,69 @@ def read_external_frame(
         frame = cv2.rotate(frame, cv2.ROTATE_180)
     if frame.shape[1] != width or frame.shape[0] != height:
         frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+    if marker is not None and marker_bbox is not None:
+        frame = marker.draw_bbox(frame, marker_bbox)
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     image = torch.from_numpy(np.ascontiguousarray(rgb)).float().permute(2, 0, 1) / 255.0
     return frame, image
+
+
+def resolve_target_bowl_choice(args: argparse.Namespace) -> tuple[str | None, str | None]:
+    if not args.mark_external_bowl:
+        return None, None
+    if args.target_bowl == "l":
+        args.target_bowl = "left"
+    elif args.target_bowl == "r":
+        args.target_bowl = "right"
+    if args.target_bowl == "prompt":
+        if args.no_prompt:
+            raise ValueError("--target-bowl prompt cannot be used together with --no-prompt.")
+        while True:
+            raw = input("\nSelect target bowl for policy run [l/r]: ").strip().lower()
+            if raw in {"l", "left", "leftmost"}:
+                return "leftmost", "left"
+            if raw in {"r", "right", "rightmost"}:
+                return "rightmost", "right"
+            print("Please enter l or r.")
+    if args.target_bowl == "left":
+        return "leftmost", "left"
+    if args.target_bowl == "right":
+        return "rightmost", "right"
+    raise ValueError(f"Unsupported target bowl choice: {args.target_bowl}")
+
+
+def capture_marker_bbox(
+    *,
+    external_camera: cv2.VideoCapture,
+    marker: YOLOSegMarker,
+    target_choice: str,
+    args: argparse.Namespace,
+) -> tuple[int, int, int, int]:
+    preview, _image = read_external_frame(
+        external_camera,
+        width=args.width,
+        height=args.height,
+        rotate_180=args.external_rotate_180,
+    )
+    marker.choose = target_choice
+    marked, meta = marker.infer(
+        preview,
+        args.marker_target,
+        return_meta=True,
+        mode=args.marker_mode,
+    )
+    bbox = meta.get("bbox_xyxy")
+    if not meta.get("found") or bbox is None:
+        raise RuntimeError(f"Target bowl marker not found: {meta}")
+    print(
+        "Marked target bowl: "
+        f"{args.target_bowl}, class={meta.get('class_name')}, "
+        f"conf={meta.get('confidence'):.2f}, bbox={bbox}"
+    )
+    if args.show:
+        cv2.imshow("selected_target_bowl_marker", marked)
+        cv2.waitKey(500)
+    return tuple(int(v) for v in bbox)
 
 
 def show_dual_preview(
@@ -177,6 +247,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reset-stage-delay-s", type=float, default=0.9)
     parser.add_argument("--no-wrist-rotate-180", action="store_true")
     parser.add_argument("--external-rotate-180", action="store_true")
+    parser.add_argument(
+        "--mark-external-bowl",
+        action="store_true",
+        help="Draw a blue marker on the selected target bowl in the external camera observation.",
+    )
+    parser.add_argument("--marker-model", default=str(BASE_DIR / "yolo11s.pt"))
+    parser.add_argument("--marker-target", default="bowl")
+    parser.add_argument("--marker-device", default="cpu")
+    parser.add_argument("--marker-conf", type=float, default=0.25)
+    parser.add_argument("--marker-iou", type=float, default=0.7)
+    parser.add_argument("--marker-alpha", type=float, default=0.20)
+    parser.add_argument("--marker-thickness", type=int, default=6)
+    parser.add_argument("--marker-mode", choices=("bbox", "mask", "both"), default="bbox")
+    parser.add_argument(
+        "--target-bowl",
+        choices=("prompt", "l", "r", "left", "right"),
+        default="prompt",
+        help="Which bowl to mark in the external camera.",
+    )
     parser.add_argument("--show", action="store_true")
     parser.add_argument("--execute", action="store_true", help="Actually send policy actions to the follower arm.")
     return parser
@@ -226,6 +315,27 @@ def main() -> None:
         fps=args.fps,
         name="external",
     )
+    target_choice, target_label = resolve_target_bowl_choice(args)
+    external_marker = None
+    marker_bbox = None
+    if args.mark_external_bowl:
+        external_marker = YOLOSegMarker(
+            model=args.marker_model,
+            device=args.marker_device,
+            conf=args.marker_conf,
+            iou=args.marker_iou,
+            alpha=args.marker_alpha,
+            thickness=args.marker_thickness,
+            mode=args.marker_mode,
+            choose=target_choice or "leftmost",
+        )
+        print(f"External target marker enabled: target={args.marker_target}, bowl={target_label}")
+        marker_bbox = capture_marker_bbox(
+            external_camera=external_camera,
+            marker=external_marker,
+            target_choice=target_choice or "leftmost",
+            args=args,
+        )
 
     arm = ServoController(port=args.follower_port)
     last_state: np.ndarray | None = None
@@ -251,6 +361,8 @@ def main() -> None:
         "and the bowl visible in wrist/external views."
     )
     print(f"Camera indexes: wrist={args.wrist_camera}, external={args.external_camera}")
+    if args.mark_external_bowl:
+        print(f"External marker bbox: {marker_bbox}")
     print("Press Ctrl+C to stop.")
 
     frame_count = max(1, int(round(args.duration_s * args.fps)))
@@ -269,6 +381,8 @@ def main() -> None:
                 width=args.width,
                 height=args.height,
                 rotate_180=args.external_rotate_180,
+                marker=external_marker,
+                marker_bbox=marker_bbox,
             )
             follower_positions = sanitize_follower_positions(
                 read_follower_positions(arm, (1, 2, 3, 4, 5, 6)),
