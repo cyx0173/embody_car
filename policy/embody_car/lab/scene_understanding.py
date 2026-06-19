@@ -1,5 +1,7 @@
-from vlm import VLM
-class VisualQA:
+from support.vlm import VLM
+
+
+class SceneUnderstanding:
     def __init__(self):
         self.vlm = VLM()
 

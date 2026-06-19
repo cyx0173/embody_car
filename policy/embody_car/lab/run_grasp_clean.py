@@ -23,7 +23,6 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from arm_control import ServoController
-from mark_one_bowl import YOLOSegMarker
 from policy_config import (
     DEFAULT_FOLLOWER_PORT,
     FOLLOWER_MAX_TARGET_STEP_TICKS,
@@ -41,6 +40,7 @@ from policy_config import (
     positions_to_array,
     sanitize_follower_positions,
 )
+from support.marker import YOLOSegMarker
 
 
 RED_BGR = (0, 0, 255)

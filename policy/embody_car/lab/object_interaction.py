@@ -11,7 +11,7 @@ import time
 import os
 import sys
 from pathlib import Path
-from solve_ik import solve_ik
+from support.ik import solve_ik
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -118,7 +118,7 @@ SAFE_READY_SETTLE_S = 4.0
 RESET_BEFORE_COORDINATE_MEASURE = True
 COORDINATE_RESET_SETTLE_S = 0.8
 
-class RoboticInteraction:
+class ObjectInteraction:
 
     def __init__(
         self,
@@ -868,5 +868,5 @@ class RoboticInteraction:
 
 
 if __name__ == "__main__":
-    robot = RoboticInteraction()
-    robot.interact("orange")
+    robot = ObjectInteraction()
+    robot.interact("bottle")

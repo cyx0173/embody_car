@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from vlm import ZHIPUAI_API_KEY, VLM_IMPORT_ERROR, ZhipuAI
+from support.vlm import ZHIPUAI_API_KEY, VLM_IMPORT_ERROR, ZhipuAI
 
 
 CHAT_MODEL = "glm-4-flash"

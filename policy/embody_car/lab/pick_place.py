@@ -38,7 +38,7 @@ def bowl_marker_choice(target_bowl: str) -> str:
     return "leftmost" if target_bowl == "left" else "rightmost"
 
 
-class CleanPickPlaceSkill:
+class PickPlaceSkill:
     """Voice-callable wrapper for clean dual-camera grasp -> marked bowl place."""
 
     def __init__(

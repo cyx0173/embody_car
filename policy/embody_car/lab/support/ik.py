@@ -2,7 +2,7 @@ from __future__ import annotations
 import numpy as np
 import math
 from collections.abc import Sequence
-from Angle_config import MY_CONFIG, angles_to_ticks 
+from support.arm_geometry import MY_CONFIG, angles_to_ticks
 
 # 单位: meter / radian
 BASE_HEIGHT_M = 0.075

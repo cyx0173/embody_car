@@ -85,7 +85,7 @@ class DryRunServoController:
         return self.positions.get(servo_id, 2000)
 
 
-class VisualTracking:
+class ObjectTracking:
     def __init__(
         self,
         camera: CameraManager,
@@ -379,6 +379,6 @@ class VisualTracking:
 if __name__ == "__main__":
     os.environ.setdefault("TRACK_SHOW_WINDOW", "1")
     SHOW_TRACKING_WINDOW = os.getenv("TRACK_SHOW_WINDOW", "0") == "1"
-    tracker = VisualTracking()
+    tracker = ObjectTracking()
     time.sleep(2)
     tracker.track(target_class="bottle")

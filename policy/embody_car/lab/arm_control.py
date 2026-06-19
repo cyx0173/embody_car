@@ -1,7 +1,7 @@
 from turtle import pos
 import serial
 import time
-from Angle_config import SERVO_CALIBRATION, JOINT_ID_MAP
+from support.arm_geometry import JOINT_ID_MAP, SERVO_CALIBRATION
 import math
 def _resolve_zero_position(joint_config: dict) -> int:
     lower = int(joint_config["range_min"])
