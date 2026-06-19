@@ -1,0 +1,236 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!-- Generated using onshape-to-robot -->
+<!-- Onshape https://cad.onshape.com/documents/7715cc284bb430fe6dab4ffd/w/4fd0791b683777b02f8d975a/e/826c553ede3b7592eb9ca800 -->
+<robot name="so101_follower">
+
+  <!-- 引入其他 urdf/xacro 内容；通常放一些公共定义或硬件接口配置 -->
+  <xacro:include filename="$(find so101_hw_interface)/urdf/so101_follower.urdf" />
+
+  <!-- 世界坐标系。它本身不是机械臂实体，只是整台机械臂挂接的参考坐标系 -->
+  <link name="world"/>
+
+  <!-- 固定关节：把 base_link 固定到 world 上，不参与运动 -->
+  <joint name="world_to_base" type="fixed">
+    <!-- 父链接：该关节以上游哪个 link 作为参考 -->
+    <parent link="world"/>
+    <!-- 子链接：该关节连接到哪个下游 link -->
+    <child link="base_link"/>
+    <!-- 关节原点：子 link 坐标系相对父 link 坐标系的位置 xyz 和姿态 rpy -->
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- 下面开始是机械臂主体的力学/运动学描述 -->
+  <!-- 保留了：
+       1. link：连杆/刚体名称
+       2. inertial：质量、质心、惯性张量
+       3. joint：关节类型、连接关系、相对位姿、转轴、活动范围
+       4. transmission：电机/执行器与关节的传动映射
+       这些信息足以描述机械臂的骨架、连接和关节活动信息 -->
+  <!-- Hard-coded calibrated limits (matching your calibration file) -->
+
+  <!-- Link base：底座连杆 -->
+  <link name="base_link">
+    <!-- 惯性参数：
+         origin：该连杆质心相对 link 坐标系的位置/姿态
+         mass：连杆质量，单位通常是 kg
+         inertia：绕质心的惯性张量，描述转动惯量，单位通常是 kg*m^2 -->
+    <inertial>
+      <origin xyz="0.020739 0.00204287 0.065966" rpy="0 0 0"/>
+      <mass value="0.147"/>
+      <inertia ixx="0.000136117" ixy="4.59787e-07" ixz="9.75275e-08" iyy="0.000114686" iyz="-4.97151e-06" izz="0.000130364"/>
+    </inertial>
+  </link>
+
+  <!-- Link shoulder：肩部连杆 -->
+  <link name="shoulder_link">
+    <inertial>
+      <origin xyz="-0.0307604 -1.66727e-05 -0.0252713" rpy="0 0 0"/>
+      <mass value="0.100006"/>
+      <inertia ixx="8.3759e-05" ixy="7.55525e-08" ixz="-1.16342e-06" iyy="8.10403e-05" iyz="1.54663e-07" izz="2.39783e-05"/>
+    </inertial>
+  </link>
+
+  <!-- Link upper_arm：上臂连杆 -->
+  <link name="upper_arm_link">
+    <inertial>
+      <origin xyz="-0.0898471 -0.00838224 0.0184089" rpy="0 0 0"/>
+      <mass value="0.103"/>
+      <inertia ixx="4.08002e-05" ixy="-1.97819e-05" ixz="-4.03016e-08" iyy="0.000147318" iyz="8.97326e-09" izz="0.000142487"/>
+    </inertial>
+  </link>
+
+  <!-- Link lower_arm：前臂/下臂连杆 -->
+  <link name="lower_arm_link">
+    <inertial>
+      <origin xyz="-0.0980701 0.00324376 0.0182831" rpy="0 0 0"/>
+      <mass value="0.104"/>
+      <inertia ixx="2.87438e-05" ixy="7.41152e-06" ixz="1.26409e-06" iyy="0.000159844" iyz="-4.90188e-08" izz="0.00014529"/>
+    </inertial>
+  </link>
+
+  <!-- Link wrist：腕部连杆 -->
+  <link name="wrist_link">
+    <inertial>
+      <origin xyz="-0.000103312 -0.0386143 0.0281156" rpy="0 0 0"/>
+      <mass value="0.079"/>
+      <inertia ixx="3.68263e-05" ixy="1.7893e-08" ixz="-5.28128e-08" iyy="2.5391e-05" iyz="3.6412e-06" izz="2.1e-05"/>
+    </inertial>
+  </link>
+
+  <!-- Link gripper：夹爪基座连杆 -->
+  <link name="gripper_link">
+    <inertial>
+      <origin xyz="0.000213627 0.000245138 -0.025187" rpy="0 0 0"/>
+      <mass value="0.087"/>
+      <inertia ixx="2.75087e-05" ixy="-3.35241e-07" ixz="-5.7352e-06" iyy="4.33657e-05" iyz="-5.17847e-08" izz="3.45059e-05"/>
+    </inertial>
+  </link>
+
+  <!-- Link jaw：活动夹爪连杆 -->
+  <link name="jaw_link">
+    <inertial>
+      <origin xyz="-0.00157495 -0.0300244 0.0192755" rpy="0 0 0"/>
+      <mass value="0.012"/>
+      <inertia ixx="6.61427e-06" ixy="-3.19807e-07" ixz="-5.90717e-09" iyy="1.89032e-06" iyz="-1.09945e-07" izz="5.28738e-06"/>
+    </inertial>
+  </link>
+
+  <!-- Joint from gripper to jaw：夹爪开合关节 -->
+  <joint name="gripper" type="revolute">
+    <!-- 该关节坐标系相对父 link（gripper_link）的位置和姿态 -->
+    <origin xyz="0.0202 0.0188 -0.0234" rpy="1.5708 -5.14108e-17 -1.38655e-14"/>
+    <!-- 父 link：关节安装在 gripper_link 上 -->
+    <parent link="gripper_link"/>
+    <!-- 子 link：关节驱动 jaw_link 相对父 link 运动 -->
+    <child link="jaw_link"/>
+    <!-- 关节轴：在关节局部坐标系中，绕哪个轴转动 -->
+    <axis xyz="0 0 1"/>
+    <!-- calibrated limits: raw(2047,3489) home(2768) = (-1.110,+1.109) rad -->
+    <!-- 关节限位：
+         effort：最大驱动力/力矩
+         velocity：最大速度
+         lower/upper：关节角度上下限（弧度） -->
+    <limit effort="10" velocity="10" lower="-0.174533" upper="1.74533"/>
+  </joint>
+
+  <!-- transmission：描述“这个关节由哪个执行器驱动” -->
+  <transmission name="gripper_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <!-- 被驱动的关节 -->
+    <joint name="gripper">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <!-- 驱动该关节的执行器/电机 -->
+    <actuator name="motor6">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <!-- 机械减速比；这里 1 表示电机输出与关节角度直接对应 -->
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <!-- Joint from wrist to gripper：腕部滚转关节 -->
+  <joint name="wrist_roll" type="revolute">
+    <origin xyz="0 -0.0611 0.0181" rpy="1.5708 -9.38083e-08 3.14159"/>
+    <parent link="wrist_link"/>
+    <child link="gripper_link"/>
+    <axis xyz="0 0 1"/>
+    <!-- calibrated limits: raw(0,4766) home(2084) = (-3.194,+4.120) rad -->
+    <limit effort="10" velocity="10" lower="-2.146" upper="1.223"/>
+  </joint>
+
+  <transmission name="wrist_roll_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="wrist_roll">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="motor5">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <!-- Joint from lower_arm to wrist：腕部俯仰关节 -->
+  <joint name="wrist_flex" type="revolute">
+    <origin xyz="-0.1349 0.0052 1.65232e-16" rpy="3.2474e-15 2.86219e-15 -1.5708"/>
+    <parent link="lower_arm_link"/>
+    <child link="wrist_link"/>
+    <axis xyz="0 0 1"/>
+    <!-- calibrated limits: raw(588,2917) home(1752) = (-1.786,+1.790) rad -->
+    <limit effort="10" velocity="10" lower="-1.57" upper="1.57"/>
+  </joint>
+
+  <transmission name="wrist_flex_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="wrist_flex">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="motor4">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <!-- Joint from upper_arm to lower_arm：肘关节 -->
+  <joint name="elbow_flex" type="revolute">
+    <origin xyz="-0.11257 -0.028 2.46331e-16" rpy="-1.22818e-15 5.75928e-16 1.5708"/>
+    <parent link="upper_arm_link"/>
+    <child link="lower_arm_link"/>
+    <axis xyz="0 0 1"/>
+    <!-- calibrated limits: raw(976,3130) home(2053) = (-1.653,+1.654) rad -->
+    <limit effort="10" velocity="10" lower="-1.57" upper="1.57"/>
+  </joint>
+
+  <transmission name="elbow_flex_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="elbow_flex">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="motor3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <!-- Joint from shoulder to upper_arm：肩关节抬升/俯仰 -->
+  <joint name="shoulder_lift" type="revolute">
+    <origin xyz="-0.0303992 -0.0182778 -0.0542" rpy="-1.5708 -1.5708 0"/>
+    <parent link="shoulder_link"/>
+    <child link="upper_arm_link"/>
+    <axis xyz="0 0 1"/>
+    <!-- calibrated limits: raw(740,3370) home(2055) = (-2.018,+2.018) rad -->
+    <limit effort="10" velocity="10" lower="-1.57" upper="1.57"/>
+  </joint>
+
+  <transmission name="shoulder_lift_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="shoulder_lift">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="motor2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <!-- Joint from base to shoulder：底座回转关节 -->
+  <joint name="shoulder_pan" type="revolute">
+    <origin xyz="0.0207909 -0.0230745 0.0948817" rpy="-3.14159 6.03684e-16 1.5708"/>
+    <parent link="base_link"/>
+    <child link="shoulder_link"/>
+    <axis xyz="0 0 1"/>
+    <!-- calibrated limits: raw(745,3424) home(2084) = (-2.055,+2.058) rad -->
+    <limit effort="10" velocity="10" lower="-1.57" upper="1.57"/>
+  </joint>
+
+  <transmission name="shoulder_pan_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="shoulder_pan">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="motor1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+</robot>
