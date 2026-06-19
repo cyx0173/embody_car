@@ -3,12 +3,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from orange_grasp_config import (
+from policy_config import (
     DEFAULT_FOLLOWER_PORT,
     GRIPPER_FOLLOWER_OPEN,
-    ORANGE_PLACE_POLICY_DURATION_S,
-    ORANGE_POLICY_FPS,
-    ORANGE_POLICY_SPEED,
+    PLACE_POLICY_DURATION_S,
+    POLICY_FPS,
+    POLICY_SPEED,
 )
 from run_grasp_clean import (
     DEFAULT_POLICY_PATH as DEFAULT_GRASP_POLICY_PATH,
@@ -51,10 +51,10 @@ class CleanPickPlaceSkill:
         external_camera: int = 0,
         marker_model: Path = BASE_DIR / "yolo11s.pt",
         marker_device: str = "auto",
-        fps: float = ORANGE_POLICY_FPS,
-        speed: int = ORANGE_POLICY_SPEED,
+        fps: float = POLICY_FPS,
+        speed: int = POLICY_SPEED,
         grasp_duration_s: float = 25.0,
-        place_duration_s: float = ORANGE_PLACE_POLICY_DURATION_S,
+        place_duration_s: float = PLACE_POLICY_DURATION_S,
         show: bool = True,
         execute: bool = True,
     ) -> None:
@@ -137,7 +137,7 @@ class CleanPickPlaceSkill:
         return DualCameraGraspRunner(args).run()
 
     def run(self, *, target: str, target_bowl: str | None = None) -> str:
-        target = (target or "orange").strip().lower()
+        target = (target or "apple").strip().lower()
         bowl = normalize_bowl(target_bowl)
 
         print(

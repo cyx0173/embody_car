@@ -24,17 +24,17 @@ if str(BASE_DIR) not in sys.path:
 
 from arm_control import ServoController
 from mark_one_bowl import YOLOSegMarker
-from orange_grasp_config import (
+from policy_config import (
     DEFAULT_FOLLOWER_PORT,
     FOLLOWER_MAX_TARGET_STEP_TICKS,
     GRIPPER_FOLLOWER_CLOSE,
     GRIPPER_FOLLOWER_OPEN,
     GRIPPER_MAX_TARGET_STEP_TICKS,
     MIN_DELTA_TICKS,
-    ORANGE_POLICY_ACC,
-    ORANGE_POLICY_DURATION_S,
-    ORANGE_POLICY_FPS,
-    ORANGE_POLICY_SPEED,
+    POLICY_ACC,
+    POLICY_DURATION_S,
+    POLICY_FPS,
+    POLICY_SPEED,
     SERVO_IDS,
     clamp_follower_target,
     normalize_servo_reading,
@@ -388,11 +388,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--external-camera", type=int, default=0)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--fps", type=float, default=ORANGE_POLICY_FPS)
-    parser.add_argument("--duration-s", type=float, default=ORANGE_POLICY_DURATION_S)
+    parser.add_argument("--fps", type=float, default=POLICY_FPS)
+    parser.add_argument("--duration-s", type=float, default=POLICY_DURATION_S)
     parser.add_argument("--device", choices=("auto", "cpu", "mps", "cuda"), default="auto")
-    parser.add_argument("--speed", type=int, default=ORANGE_POLICY_SPEED)
-    parser.add_argument("--acc", type=int, default=ORANGE_POLICY_ACC)
+    parser.add_argument("--speed", type=int, default=POLICY_SPEED)
+    parser.add_argument("--acc", type=int, default=POLICY_ACC)
     parser.add_argument("--min-delta", type=int, default=MIN_DELTA_TICKS)
     parser.add_argument("--target-max-step", type=int, default=FOLLOWER_MAX_TARGET_STEP_TICKS)
     parser.add_argument("--gripper-target-max-step", type=int, default=GRIPPER_MAX_TARGET_STEP_TICKS)
@@ -401,7 +401,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-wrist-rotate-180", action="store_true")
     parser.add_argument("--external-rotate-180", action="store_true")
     parser.add_argument("--marker-model", default=str(BASE_DIR / "yolo11s.pt"))
-    parser.add_argument("--marker-target", default="orange")
+    parser.add_argument("--marker-target", default="object")
     parser.add_argument("--marker-device", default="auto")
     parser.add_argument("--marker-conf", type=float, default=0.25)
     parser.add_argument("--marker-iou", type=float, default=0.7)
