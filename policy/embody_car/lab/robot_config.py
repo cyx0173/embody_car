@@ -1,4 +1,4 @@
-"""Shared defaults for the voice-driven ACT pick-place workflow."""
+"""Robot hardware and ACT policy runtime configuration."""
 
 from __future__ import annotations
 

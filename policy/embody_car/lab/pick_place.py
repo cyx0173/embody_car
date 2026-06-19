@@ -3,14 +3,14 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from policy_config import (
+from robot_config import (
     DEFAULT_FOLLOWER_PORT,
     GRIPPER_FOLLOWER_OPEN,
     PLACE_POLICY_DURATION_S,
     POLICY_FPS,
     POLICY_SPEED,
 )
-from run_grasp_clean import (
+from act_policy_runner import (
     DEFAULT_POLICY_PATH as DEFAULT_GRASP_POLICY_PATH,
     DualCameraGraspRunner,
     build_arg_parser as build_runner_arg_parser,

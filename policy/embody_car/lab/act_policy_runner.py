@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Clean dual-camera red-marker ACT grasp runner with manual gripper close."""
+"""Dual-camera ACT policy runner with manual runtime controls."""
 
 from __future__ import annotations
 
@@ -22,8 +22,7 @@ PROJECT_DIR = WORKSPACE_DIR.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from arm_control import ServoController
-from policy_config import (
+from robot_config import (
     DEFAULT_FOLLOWER_PORT,
     FOLLOWER_MAX_TARGET_STEP_TICKS,
     GRIPPER_FOLLOWER_CLOSE,
@@ -40,6 +39,7 @@ from policy_config import (
     positions_to_array,
     sanitize_follower_positions,
 )
+from servo_controller import ServoController
 from support.marker import YOLOSegMarker
 
 

@@ -4,7 +4,7 @@ from camera import CameraManager, center_crop_resize, CAMERA_WORKING_SIZE, HAND_
 from ultralytics import YOLO
 from interaction.so101 import RobotIKSolver
 import numpy as np
-from arm_control import ServoController
+from servo_controller import ServoController
 import json
 import cv2
 import time

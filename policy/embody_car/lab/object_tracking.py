@@ -4,8 +4,8 @@ import numpy as np
 import os
 import time
 from ultralytics import YOLO
-from arm_control import ServoController
 from camera import CameraManager
+from servo_controller import ServoController
 
 BASE_DIR = Path(__file__).resolve().parent
 SEARCH_AXIS_ID = 1
